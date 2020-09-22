@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* * Copyright(c) 2011 Intel Corporation. All rights reserved.
+/*
+ * Copyright(c) 2011 Intel Corporation. All rights reserved.
  *
  * Maintained at www.Open-FCoE.org
  */
@@ -62,8 +63,8 @@ enum fc_fdmi_hba_attr_type {
  * HBA Attribute Length
  */
 #define FC_FDMI_HBA_ATTR_NODENAME_LEN		8
-#define FC_FDMI_HBA_ATTR_MANUFACTURER_LEN	64
-#define FC_FDMI_HBA_ATTR_SERIALNUMBER_LEN	64
+#define FC_FDMI_HBA_ATTR_MANUFACTURER_LEN	80
+#define FC_FDMI_HBA_ATTR_SERIALNUMBER_LEN	80
 #define FC_FDMI_HBA_ATTR_MODEL_LEN		256
 #define FC_FDMI_HBA_ATTR_MODELDESCR_LEN		256
 #define FC_FDMI_HBA_ATTR_HARDWAREVERSION_LEN	256

@@ -129,7 +129,7 @@ struct mtip_compat_ide_task_request_s {
 /*
  * This function check_for_surprise_removal is called
  * while card is removed from the system and it will
- * read the vendor id from the configration space
+ * read the vendor id from the configuration space
  *
  * @pdev Pointer to the pci_dev structure.
  *
@@ -492,7 +492,8 @@ static void mtip_complete_command(struct mtip_cmd *cmd, blk_status_t status)
 	struct request *req = blk_mq_rq_from_pdu(cmd);
 
 	cmd->status = status;
-	blk_mq_complete_request(req);
+	if (likely(!blk_should_fake_timeout(req->q)))
+		blk_mq_complete_request(req);
 }
 
 /*
@@ -1577,7 +1578,6 @@ static int exec_drive_command(struct mtip_port *port, u8 *command,
 				ATA_SECT_SIZE * xfer_sz);
 			return -ENOMEM;
 		}
-		memset(buf, 0, ATA_SECT_SIZE * xfer_sz);
 	}
 
 	/* Build the FIS. */
@@ -2776,7 +2776,6 @@ static int mtip_dma_alloc(struct driver_data *dd)
 					&port->block1_dma, GFP_KERNEL);
 	if (!port->block1)
 		return -ENOMEM;
-	memset(port->block1, 0, BLOCK_DMA_ALLOC_SZ);
 
 	/* Allocate dma memory for command list */
 	port->command_list =
@@ -2789,7 +2788,6 @@ static int mtip_dma_alloc(struct driver_data *dd)
 		port->block1_dma = 0;
 		return -ENOMEM;
 	}
-	memset(port->command_list, 0, AHCI_CMD_TBL_SZ);
 
 	/* Setup all pointers into first DMA region */
 	port->rxfis         = port->block1 + AHCI_RX_FIS_OFFSET;
@@ -3528,8 +3526,6 @@ static int mtip_init_cmd(struct blk_mq_tag_set *set, struct request *rq,
 			&cmd->command_dma, GFP_KERNEL);
 	if (!cmd->command)
 		return -ENOMEM;
-
-	memset(cmd->command, 0, CMD_DMA_ALLOC_SZ);
 
 	sg_init_table(cmd->sg, MTIP_MAX_SG);
 	return 0;

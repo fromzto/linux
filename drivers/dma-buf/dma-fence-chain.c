@@ -62,7 +62,8 @@ struct dma_fence *dma_fence_chain_walk(struct dma_fence *fence)
 			replacement = NULL;
 		}
 
-		tmp = cmpxchg((void **)&chain->prev, (void *)prev, (void *)replacement);
+		tmp = cmpxchg((struct dma_fence __force **)&chain->prev,
+			      prev, replacement);
 		if (tmp == prev)
 			dma_fence_put(tmp);
 		else
@@ -178,8 +179,30 @@ static bool dma_fence_chain_signaled(struct dma_fence *fence)
 static void dma_fence_chain_release(struct dma_fence *fence)
 {
 	struct dma_fence_chain *chain = to_dma_fence_chain(fence);
+	struct dma_fence *prev;
 
-	dma_fence_put(rcu_dereference_protected(chain->prev, true));
+	/* Manually unlink the chain as much as possible to avoid recursion
+	 * and potential stack overflow.
+	 */
+	while ((prev = rcu_dereference_protected(chain->prev, true))) {
+		struct dma_fence_chain *prev_chain;
+
+		if (kref_read(&prev->refcount) > 1)
+		       break;
+
+		prev_chain = to_dma_fence_chain(prev);
+		if (!prev_chain)
+			break;
+
+		/* No need for atomic operations since we hold the last
+		 * reference to prev_chain.
+		 */
+		chain->prev = prev_chain->prev;
+		RCU_INIT_POINTER(prev_chain->prev, NULL);
+		dma_fence_put(prev);
+	}
+	dma_fence_put(prev);
+
 	dma_fence_put(chain->fence);
 	dma_fence_free(fence);
 }
@@ -199,6 +222,7 @@ EXPORT_SYMBOL(dma_fence_chain_ops);
  * @chain: the chain node to initialize
  * @prev: the previous fence
  * @fence: the current fence
+ * @seqno: the sequence number to use for the fence chain
  *
  * Initialize a new chain node and either start a new chain or add the node to
  * the existing chain of the previous fence.

@@ -974,12 +974,11 @@ static int get_swap_reader(struct swap_map_handle *handle,
 	last = handle->maps = NULL;
 	offset = swsusp_header->image;
 	while (offset) {
-		tmp = kmalloc(sizeof(*handle->maps), GFP_KERNEL);
+		tmp = kzalloc(sizeof(*handle->maps), GFP_KERNEL);
 		if (!tmp) {
 			release_swap_reader(handle);
 			return -ENOMEM;
 		}
-		memset(tmp, 0, sizeof(*tmp));
 		if (!handle->maps)
 			handle->maps = tmp;
 		if (last)
@@ -1591,7 +1590,7 @@ int swsusp_unmark(void)
 }
 #endif
 
-static int swsusp_header_init(void)
+static int __init swsusp_header_init(void)
 {
 	swsusp_header = (struct swsusp_header*) __get_free_page(GFP_KERNEL);
 	if (!swsusp_header)

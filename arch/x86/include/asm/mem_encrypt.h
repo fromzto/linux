@@ -1,13 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * AMD Memory Encryption Support
  *
  * Copyright (C) 2016 Advanced Micro Devices, Inc.
  *
  * Author: Tom Lendacky <thomas.lendacky@amd.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __X86_MEM_ENCRYPT_H__
@@ -46,9 +43,10 @@ void __init sme_enable(struct boot_params *bp);
 int __init early_set_memory_decrypted(unsigned long vaddr, unsigned long size);
 int __init early_set_memory_encrypted(unsigned long vaddr, unsigned long size);
 
+void __init mem_encrypt_free_decrypted_mem(void);
+
 /* Architecture __weak replacement functions */
 void __init mem_encrypt_init(void);
-void __init mem_encrypt_free_decrypted_mem(void);
 
 bool sme_active(void);
 bool sev_active(void);
@@ -80,6 +78,8 @@ early_set_memory_decrypted(unsigned long vaddr, unsigned long size) { return 0; 
 static inline int __init
 early_set_memory_encrypted(unsigned long vaddr, unsigned long size) { return 0; }
 
+static inline void mem_encrypt_free_decrypted_mem(void) { }
+
 #define __bss_decrypted
 
 #endif	/* CONFIG_AMD_MEM_ENCRYPT */
@@ -94,6 +94,16 @@ early_set_memory_encrypted(unsigned long vaddr, unsigned long size) { return 0; 
 #define __sme_pa_nodebug(x)	(__pa_nodebug(x) | sme_me_mask)
 
 extern char __start_bss_decrypted[], __end_bss_decrypted[], __start_bss_decrypted_unused[];
+
+static inline bool mem_encrypt_active(void)
+{
+	return sme_me_mask;
+}
+
+static inline u64 sme_get_me_mask(void)
+{
+	return sme_me_mask;
+}
 
 #endif	/* __ASSEMBLY__ */
 

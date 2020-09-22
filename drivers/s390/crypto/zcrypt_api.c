@@ -35,6 +35,8 @@
 
 #include "zcrypt_msgtype6.h"
 #include "zcrypt_msgtype50.h"
+#include "zcrypt_ccamisc.h"
+#include "zcrypt_ep11misc.h"
 
 /*
  * Module description.
@@ -133,18 +135,6 @@ struct zcdn_device {
 static int zcdn_create(const char *name);
 static int zcdn_destroy(const char *name);
 
-/* helper function, matches the name for find_zcdndev_by_name() */
-static int __match_zcdn_name(struct device *dev, const void *data)
-{
-	return strcmp(dev_name(dev), (const char *)data) == 0;
-}
-
-/* helper function, matches the devt value for find_zcdndev_by_devt() */
-static int __match_zcdn_devt(struct device *dev, const void *data)
-{
-	return dev->devt == *((dev_t *) data);
-}
-
 /*
  * Find zcdn device by name.
  * Returns reference to the zcdn device which needs to be released
@@ -152,10 +142,7 @@ static int __match_zcdn_devt(struct device *dev, const void *data)
  */
 static inline struct zcdn_device *find_zcdndev_by_name(const char *name)
 {
-	struct device *dev =
-		class_find_device(zcrypt_class, NULL,
-				  (void *) name,
-				  __match_zcdn_name);
+	struct device *dev = class_find_device_by_name(zcrypt_class, name);
 
 	return dev ? to_zcdn_dev(dev) : NULL;
 }
@@ -167,10 +154,7 @@ static inline struct zcdn_device *find_zcdndev_by_name(const char *name)
  */
 static inline struct zcdn_device *find_zcdndev_by_devt(dev_t devt)
 {
-	struct device *dev =
-		class_find_device(zcrypt_class, NULL,
-				  (void *) &devt,
-				  __match_zcdn_devt);
+	struct device *dev = class_find_device_by_devt(zcrypt_class, devt);
 
 	return dev ? to_zcdn_dev(dev) : NULL;
 }
@@ -539,8 +523,7 @@ static int zcrypt_release(struct inode *inode, struct file *filp)
 	if (filp->f_inode->i_cdev == &zcrypt_cdev) {
 		struct zcdn_device *zcdndev;
 
-		if (mutex_lock_interruptible(&ap_perms_mutex))
-			return -ERESTARTSYS;
+		mutex_lock(&ap_perms_mutex);
 		zcdndev = find_zcdndev_by_devt(filp->f_inode->i_rdev);
 		mutex_unlock(&ap_perms_mutex);
 		if (zcdndev) {
@@ -623,8 +606,8 @@ static inline bool zcrypt_card_compare(struct zcrypt_card *zc,
 	weight += atomic_read(&zc->load);
 	pref_weight += atomic_read(&pref_zc->load);
 	if (weight == pref_weight)
-		return atomic_read(&zc->card->total_request_count) >
-			atomic_read(&pref_zc->card->total_request_count);
+		return atomic64_read(&zc->card->total_request_count) >
+			atomic64_read(&pref_zc->card->total_request_count);
 	return weight > pref_weight;
 }
 
@@ -651,7 +634,7 @@ static long zcrypt_rsa_modexpo(struct ap_perms *perms,
 {
 	struct zcrypt_card *zc, *pref_zc;
 	struct zcrypt_queue *zq, *pref_zq;
-	unsigned int weight, pref_weight;
+	unsigned int weight = 0, pref_weight = 0;
 	unsigned int func_code;
 	int qid = 0, rc = -ENODEV;
 	struct module *mod;
@@ -735,7 +718,7 @@ static long zcrypt_rsa_crt(struct ap_perms *perms,
 {
 	struct zcrypt_card *zc, *pref_zc;
 	struct zcrypt_queue *zq, *pref_zq;
-	unsigned int weight, pref_weight;
+	unsigned int weight = 0, pref_weight = 0;
 	unsigned int func_code;
 	int qid = 0, rc = -ENODEV;
 	struct module *mod;
@@ -820,7 +803,7 @@ static long _zcrypt_send_cprb(struct ap_perms *perms,
 	struct zcrypt_card *zc, *pref_zc;
 	struct zcrypt_queue *zq, *pref_zq;
 	struct ap_message ap_msg;
-	unsigned int weight, pref_weight;
+	unsigned int weight = 0, pref_weight = 0;
 	unsigned int func_code;
 	unsigned short *domain, tdom;
 	int qid = 0, rc = -ENODEV;
@@ -839,7 +822,7 @@ static long _zcrypt_send_cprb(struct ap_perms *perms,
 	 * domain but a control only domain, use the default domain as target.
 	 */
 	tdom = *domain;
-	if (tdom >= 0 && tdom < AP_DOMAINS &&
+	if (tdom < AP_DOMAINS &&
 	    !ap_test_config_usage_domain(tdom) &&
 	    ap_test_config_ctrl_domain(tdom) &&
 	    ap_domain_index >= 0)
@@ -867,7 +850,7 @@ static long _zcrypt_send_cprb(struct ap_perms *perms,
 			/* check if device is online and eligible */
 			if (!zq->online ||
 			    !zq->ops->send_cprb ||
-			    (tdom != (unsigned short) AUTOSELECT &&
+			    (tdom != AUTOSEL_DOM &&
 			     tdom != AP_QID_QUEUE(zq->queue->qid)))
 				continue;
 			/* check if device node has admission for this queue */
@@ -892,7 +875,7 @@ static long _zcrypt_send_cprb(struct ap_perms *perms,
 
 	/* in case of auto select, provide the correct domain */
 	qid = pref_zq->queue->qid;
-	if (*domain == (unsigned short) AUTOSELECT)
+	if (*domain == AUTOSEL_DOM)
 		*domain = AP_QID_QUEUE(qid);
 
 	rc = pref_zq->ops->send_cprb(pref_zq, xcRB, &ap_msg);
@@ -919,7 +902,7 @@ static bool is_desired_ep11_card(unsigned int dev_id,
 				 struct ep11_target_dev *targets)
 {
 	while (target_num-- > 0) {
-		if (dev_id == targets->ap_id)
+		if (targets->ap_id == dev_id || targets->ap_id == AUTOSEL_AP)
 			return true;
 		targets++;
 	}
@@ -930,22 +913,25 @@ static bool is_desired_ep11_queue(unsigned int dev_qid,
 				  unsigned short target_num,
 				  struct ep11_target_dev *targets)
 {
+	int card = AP_QID_CARD(dev_qid), dom = AP_QID_QUEUE(dev_qid);
+
 	while (target_num-- > 0) {
-		if (AP_MKQID(targets->ap_id, targets->dom_id) == dev_qid)
+		if ((targets->ap_id == card || targets->ap_id == AUTOSEL_AP) &&
+		    (targets->dom_id == dom || targets->dom_id == AUTOSEL_DOM))
 			return true;
 		targets++;
 	}
 	return false;
 }
 
-static long zcrypt_send_ep11_cprb(struct ap_perms *perms,
-				  struct ep11_urb *xcrb)
+static long _zcrypt_send_ep11_cprb(struct ap_perms *perms,
+				   struct ep11_urb *xcrb)
 {
 	struct zcrypt_card *zc, *pref_zc;
 	struct zcrypt_queue *zq, *pref_zq;
 	struct ep11_target_dev *targets;
 	unsigned short target_num;
-	unsigned int weight, pref_weight;
+	unsigned int weight = 0, pref_weight = 0;
 	unsigned int func_code;
 	struct ap_message ap_msg;
 	int qid = 0, rc = -ENODEV;
@@ -1044,11 +1030,17 @@ out:
 	return rc;
 }
 
+long zcrypt_send_ep11_cprb(struct ep11_urb *xcrb)
+{
+	return _zcrypt_send_ep11_cprb(&ap_perms, xcrb);
+}
+EXPORT_SYMBOL(zcrypt_send_ep11_cprb);
+
 static long zcrypt_rng(char *buffer)
 {
 	struct zcrypt_card *zc, *pref_zc;
 	struct zcrypt_queue *zq, *pref_zq;
-	unsigned int weight, pref_weight;
+	unsigned int weight = 0, pref_weight = 0;
 	unsigned int func_code;
 	struct ap_message ap_msg;
 	unsigned int domain;
@@ -1160,6 +1152,34 @@ void zcrypt_device_status_mask_ext(struct zcrypt_device_status_ext *devstatus)
 }
 EXPORT_SYMBOL(zcrypt_device_status_mask_ext);
 
+int zcrypt_device_status_ext(int card, int queue,
+			     struct zcrypt_device_status_ext *devstat)
+{
+	struct zcrypt_card *zc;
+	struct zcrypt_queue *zq;
+
+	memset(devstat, 0, sizeof(*devstat));
+
+	spin_lock(&zcrypt_list_lock);
+	for_each_zcrypt_card(zc) {
+		for_each_zcrypt_queue(zq, zc) {
+			if (card == AP_QID_CARD(zq->queue->qid) &&
+			    queue == AP_QID_QUEUE(zq->queue->qid)) {
+				devstat->hwtype = zc->card->ap_dev.device_type;
+				devstat->functions = zc->card->functions >> 26;
+				devstat->qid = zq->queue->qid;
+				devstat->online = zq->online ? 0x01 : 0x00;
+				spin_unlock(&zcrypt_list_lock);
+				return 0;
+			}
+		}
+	}
+	spin_unlock(&zcrypt_list_lock);
+
+	return -ENODEV;
+}
+EXPORT_SYMBOL(zcrypt_device_status_ext);
+
 static void zcrypt_status_mask(char status[], size_t max_adapters)
 {
 	struct zcrypt_card *zc;
@@ -1206,11 +1226,12 @@ static void zcrypt_qdepth_mask(char qdepth[], size_t max_adapters)
 	spin_unlock(&zcrypt_list_lock);
 }
 
-static void zcrypt_perdev_reqcnt(int reqcnt[], size_t max_adapters)
+static void zcrypt_perdev_reqcnt(u32 reqcnt[], size_t max_adapters)
 {
 	struct zcrypt_card *zc;
 	struct zcrypt_queue *zq;
 	int card;
+	u64 cnt;
 
 	memset(reqcnt, 0, sizeof(int) * max_adapters);
 	spin_lock(&zcrypt_list_lock);
@@ -1222,8 +1243,9 @@ static void zcrypt_perdev_reqcnt(int reqcnt[], size_t max_adapters)
 			    || card >= max_adapters)
 				continue;
 			spin_lock(&zq->queue->lock);
-			reqcnt[card] = zq->queue->total_request_count;
+			cnt = zq->queue->total_request_count;
 			spin_unlock(&zq->queue->lock);
+			reqcnt[card] = (cnt < UINT_MAX) ? (u32) cnt : UINT_MAX;
 		}
 	}
 	local_bh_enable();
@@ -1276,6 +1298,99 @@ static int zcrypt_requestq_count(void)
 	return requestq_count;
 }
 
+static int icarsamodexpo_ioctl(struct ap_perms *perms, unsigned long arg)
+{
+	int rc;
+	struct ica_rsa_modexpo mex;
+	struct ica_rsa_modexpo __user *umex = (void __user *) arg;
+
+	if (copy_from_user(&mex, umex, sizeof(mex)))
+		return -EFAULT;
+	do {
+		rc = zcrypt_rsa_modexpo(perms, &mex);
+	} while (rc == -EAGAIN);
+	/* on failure: retry once again after a requested rescan */
+	if ((rc == -ENODEV) && (zcrypt_process_rescan()))
+		do {
+			rc = zcrypt_rsa_modexpo(perms, &mex);
+		} while (rc == -EAGAIN);
+	if (rc) {
+		ZCRYPT_DBF(DBF_DEBUG, "ioctl ICARSAMODEXPO rc=%d\n", rc);
+		return rc;
+	}
+	return put_user(mex.outputdatalength, &umex->outputdatalength);
+}
+
+static int icarsacrt_ioctl(struct ap_perms *perms, unsigned long arg)
+{
+	int rc;
+	struct ica_rsa_modexpo_crt crt;
+	struct ica_rsa_modexpo_crt __user *ucrt = (void __user *) arg;
+
+	if (copy_from_user(&crt, ucrt, sizeof(crt)))
+		return -EFAULT;
+	do {
+		rc = zcrypt_rsa_crt(perms, &crt);
+	} while (rc == -EAGAIN);
+	/* on failure: retry once again after a requested rescan */
+	if ((rc == -ENODEV) && (zcrypt_process_rescan()))
+		do {
+			rc = zcrypt_rsa_crt(perms, &crt);
+		} while (rc == -EAGAIN);
+	if (rc) {
+		ZCRYPT_DBF(DBF_DEBUG, "ioctl ICARSACRT rc=%d\n", rc);
+		return rc;
+	}
+	return put_user(crt.outputdatalength, &ucrt->outputdatalength);
+}
+
+static int zsecsendcprb_ioctl(struct ap_perms *perms, unsigned long arg)
+{
+	int rc;
+	struct ica_xcRB xcRB;
+	struct ica_xcRB __user *uxcRB = (void __user *) arg;
+
+	if (copy_from_user(&xcRB, uxcRB, sizeof(xcRB)))
+		return -EFAULT;
+	do {
+		rc = _zcrypt_send_cprb(perms, &xcRB);
+	} while (rc == -EAGAIN);
+	/* on failure: retry once again after a requested rescan */
+	if ((rc == -ENODEV) && (zcrypt_process_rescan()))
+		do {
+			rc = _zcrypt_send_cprb(perms, &xcRB);
+		} while (rc == -EAGAIN);
+	if (rc)
+		ZCRYPT_DBF(DBF_DEBUG, "ioctl ZSENDCPRB rc=%d status=0x%x\n",
+			   rc, xcRB.status);
+	if (copy_to_user(uxcRB, &xcRB, sizeof(xcRB)))
+		return -EFAULT;
+	return rc;
+}
+
+static int zsendep11cprb_ioctl(struct ap_perms *perms, unsigned long arg)
+{
+	int rc;
+	struct ep11_urb xcrb;
+	struct ep11_urb __user *uxcrb = (void __user *)arg;
+
+	if (copy_from_user(&xcrb, uxcrb, sizeof(xcrb)))
+		return -EFAULT;
+	do {
+		rc = _zcrypt_send_ep11_cprb(perms, &xcrb);
+	} while (rc == -EAGAIN);
+	/* on failure: retry once again after a requested rescan */
+	if ((rc == -ENODEV) && (zcrypt_process_rescan()))
+		do {
+			rc = _zcrypt_send_ep11_cprb(perms, &xcrb);
+		} while (rc == -EAGAIN);
+	if (rc)
+		ZCRYPT_DBF(DBF_DEBUG, "ioctl ZSENDEP11CPRB rc=%d\n", rc);
+	if (copy_to_user(uxcrb, &xcrb, sizeof(xcrb)))
+		return -EFAULT;
+	return rc;
+}
+
 static long zcrypt_unlocked_ioctl(struct file *filp, unsigned int cmd,
 				  unsigned long arg)
 {
@@ -1288,87 +1403,14 @@ static long zcrypt_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		return rc;
 
 	switch (cmd) {
-	case ICARSAMODEXPO: {
-		struct ica_rsa_modexpo __user *umex = (void __user *) arg;
-		struct ica_rsa_modexpo mex;
-
-		if (copy_from_user(&mex, umex, sizeof(mex)))
-			return -EFAULT;
-		do {
-			rc = zcrypt_rsa_modexpo(perms, &mex);
-		} while (rc == -EAGAIN);
-		/* on failure: retry once again after a requested rescan */
-		if ((rc == -ENODEV) && (zcrypt_process_rescan()))
-			do {
-				rc = zcrypt_rsa_modexpo(perms, &mex);
-			} while (rc == -EAGAIN);
-		if (rc) {
-			ZCRYPT_DBF(DBF_DEBUG, "ioctl ICARSAMODEXPO rc=%d\n", rc);
-			return rc;
-		}
-		return put_user(mex.outputdatalength, &umex->outputdatalength);
-	}
-	case ICARSACRT: {
-		struct ica_rsa_modexpo_crt __user *ucrt = (void __user *) arg;
-		struct ica_rsa_modexpo_crt crt;
-
-		if (copy_from_user(&crt, ucrt, sizeof(crt)))
-			return -EFAULT;
-		do {
-			rc = zcrypt_rsa_crt(perms, &crt);
-		} while (rc == -EAGAIN);
-		/* on failure: retry once again after a requested rescan */
-		if ((rc == -ENODEV) && (zcrypt_process_rescan()))
-			do {
-				rc = zcrypt_rsa_crt(perms, &crt);
-			} while (rc == -EAGAIN);
-		if (rc) {
-			ZCRYPT_DBF(DBF_DEBUG, "ioctl ICARSACRT rc=%d\n", rc);
-			return rc;
-		}
-		return put_user(crt.outputdatalength, &ucrt->outputdatalength);
-	}
-	case ZSECSENDCPRB: {
-		struct ica_xcRB __user *uxcRB = (void __user *) arg;
-		struct ica_xcRB xcRB;
-
-		if (copy_from_user(&xcRB, uxcRB, sizeof(xcRB)))
-			return -EFAULT;
-		do {
-			rc = _zcrypt_send_cprb(perms, &xcRB);
-		} while (rc == -EAGAIN);
-		/* on failure: retry once again after a requested rescan */
-		if ((rc == -ENODEV) && (zcrypt_process_rescan()))
-			do {
-				rc = _zcrypt_send_cprb(perms, &xcRB);
-			} while (rc == -EAGAIN);
-		if (rc)
-			ZCRYPT_DBF(DBF_DEBUG, "ioctl ZSENDCPRB rc=%d status=0x%x\n",
-				   rc, xcRB.status);
-		if (copy_to_user(uxcRB, &xcRB, sizeof(xcRB)))
-			return -EFAULT;
-		return rc;
-	}
-	case ZSENDEP11CPRB: {
-		struct ep11_urb __user *uxcrb = (void __user *)arg;
-		struct ep11_urb xcrb;
-
-		if (copy_from_user(&xcrb, uxcrb, sizeof(xcrb)))
-			return -EFAULT;
-		do {
-			rc = zcrypt_send_ep11_cprb(perms, &xcrb);
-		} while (rc == -EAGAIN);
-		/* on failure: retry once again after a requested rescan */
-		if ((rc == -ENODEV) && (zcrypt_process_rescan()))
-			do {
-				rc = zcrypt_send_ep11_cprb(perms, &xcrb);
-			} while (rc == -EAGAIN);
-		if (rc)
-			ZCRYPT_DBF(DBF_DEBUG, "ioctl ZSENDEP11CPRB rc=%d\n", rc);
-		if (copy_to_user(uxcrb, &xcrb, sizeof(xcrb)))
-			return -EFAULT;
-		return rc;
-	}
+	case ICARSAMODEXPO:
+		return icarsamodexpo_ioctl(perms, arg);
+	case ICARSACRT:
+		return icarsacrt_ioctl(perms, arg);
+	case ZSECSENDCPRB:
+		return zsecsendcprb_ioctl(perms, arg);
+	case ZSENDEP11CPRB:
+		return zsendep11cprb_ioctl(perms, arg);
 	case ZCRYPT_DEVICE_STATUS: {
 		struct zcrypt_device_status_ext *device_status;
 		size_t total_size = MAX_ZDEV_ENTRIES_EXT
@@ -1401,9 +1443,9 @@ static long zcrypt_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		return 0;
 	}
 	case ZCRYPT_PERDEV_REQCNT: {
-		int *reqcnt;
+		u32 *reqcnt;
 
-		reqcnt = kcalloc(AP_DEVICES, sizeof(int), GFP_KERNEL);
+		reqcnt = kcalloc(AP_DEVICES, sizeof(u32), GFP_KERNEL);
 		if (!reqcnt)
 			return -ENOMEM;
 		zcrypt_perdev_reqcnt(reqcnt, AP_DEVICES);
@@ -1460,7 +1502,7 @@ static long zcrypt_unlocked_ioctl(struct file *filp, unsigned int cmd,
 	}
 	case Z90STAT_PERDEV_REQCNT: {
 		/* the old ioctl supports only 64 adapters */
-		int reqcnt[MAX_ZDEV_CARDIDS];
+		u32 reqcnt[MAX_ZDEV_CARDIDS];
 
 		zcrypt_perdev_reqcnt(reqcnt, MAX_ZDEV_CARDIDS);
 		if (copy_to_user((int __user *) arg, reqcnt, sizeof(reqcnt)))
@@ -1874,6 +1916,8 @@ void __exit zcrypt_api_exit(void)
 	misc_deregister(&zcrypt_misc_device);
 	zcrypt_msgtype6_exit();
 	zcrypt_msgtype50_exit();
+	zcrypt_ccamisc_exit();
+	zcrypt_ep11misc_exit();
 	zcrypt_debug_exit();
 }
 

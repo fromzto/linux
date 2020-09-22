@@ -1,20 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * AArch32 (compat) system call definitions.
  *
  * Copyright (C) 2001-2005 Russell King
  * Copyright (C) 2012 ARM Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef __SYSCALL
@@ -319,8 +308,8 @@ __SYSCALL(__NR_writev, compat_sys_writev)
 __SYSCALL(__NR_getsid, sys_getsid)
 #define __NR_fdatasync 148
 __SYSCALL(__NR_fdatasync, sys_fdatasync)
-#define __NR__sysctl 149
-__SYSCALL(__NR__sysctl, compat_sys_sysctl)
+			/* 149 was sys_sysctl */
+__SYSCALL(149, sys_ni_syscall)
 #define __NR_mlock 150
 __SYSCALL(__NR_mlock, sys_mlock)
 #define __NR_munlock 151
@@ -610,9 +599,9 @@ __SYSCALL(__NR_recvfrom, compat_sys_recvfrom)
 #define __NR_shutdown 293
 __SYSCALL(__NR_shutdown, sys_shutdown)
 #define __NR_setsockopt 294
-__SYSCALL(__NR_setsockopt, compat_sys_setsockopt)
+__SYSCALL(__NR_setsockopt, sys_setsockopt)
 #define __NR_getsockopt 295
-__SYSCALL(__NR_getsockopt, compat_sys_getsockopt)
+__SYSCALL(__NR_getsockopt, sys_getsockopt)
 #define __NR_sendmsg 296
 __SYSCALL(__NR_sendmsg, compat_sys_sendmsg)
 #define __NR_recvmsg 297
@@ -886,6 +875,18 @@ __SYSCALL(__NR_fsconfig, sys_fsconfig)
 __SYSCALL(__NR_fsmount, sys_fsmount)
 #define __NR_fspick 433
 __SYSCALL(__NR_fspick, sys_fspick)
+#define __NR_pidfd_open 434
+__SYSCALL(__NR_pidfd_open, sys_pidfd_open)
+#define __NR_clone3 435
+__SYSCALL(__NR_clone3, sys_clone3)
+#define __NR_close_range 436
+__SYSCALL(__NR_close_range, sys_close_range)
+#define __NR_openat2 437
+__SYSCALL(__NR_openat2, sys_openat2)
+#define __NR_pidfd_getfd 438
+__SYSCALL(__NR_pidfd_getfd, sys_pidfd_getfd)
+#define __NR_faccessat2 439
+__SYSCALL(__NR_faccessat2, sys_faccessat2)
 
 /*
  * Please add new compat syscalls above this comment and update

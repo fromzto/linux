@@ -25,6 +25,7 @@
 #include <linux/skbuff.h>
 #include <linux/if_arp.h>
 #include <linux/jiffies.h>
+#include <linux/refcount.h>
 
 #include <net/ax25.h>
 
@@ -70,7 +71,7 @@ struct mkiss {
 #define CRC_MODE_FLEX_TEST	3
 #define CRC_MODE_SMACK_TEST	4
 
-	atomic_t		refcnt;
+	refcount_t		refcnt;
 	struct completion	dead;
 };
 
@@ -481,7 +482,7 @@ static void ax_encaps(struct net_device *dev, unsigned char *icp, int len)
 		case CRC_MODE_SMACK_TEST:
 			ax->crcmode  = CRC_MODE_FLEX_TEST;
 			printk(KERN_INFO "mkiss: %s: Trying crc-smack\n", ax->dev->name);
-			// fall through
+			fallthrough;
 		case CRC_MODE_SMACK:
 			*p |= 0x80;
 			crc = swab16(crc16(0, p, len));
@@ -490,7 +491,7 @@ static void ax_encaps(struct net_device *dev, unsigned char *icp, int len)
 		case CRC_MODE_FLEX_TEST:
 			ax->crcmode = CRC_MODE_NONE;
 			printk(KERN_INFO "mkiss: %s: Trying crc-flexnet\n", ax->dev->name);
-			// fall through
+			fallthrough;
 		case CRC_MODE_FLEX:
 			*p |= 0x20;
 			crc = calc_crc_flex(p, len);
@@ -668,7 +669,7 @@ static struct mkiss *mkiss_get(struct tty_struct *tty)
 	read_lock(&disc_data_lock);
 	ax = tty->disc_data;
 	if (ax)
-		atomic_inc(&ax->refcnt);
+		refcount_inc(&ax->refcnt);
 	read_unlock(&disc_data_lock);
 
 	return ax;
@@ -676,7 +677,7 @@ static struct mkiss *mkiss_get(struct tty_struct *tty)
 
 static void mkiss_put(struct mkiss *ax)
 {
-	if (atomic_dec_and_test(&ax->refcnt))
+	if (refcount_dec_and_test(&ax->refcnt))
 		complete(&ax->dead);
 }
 
@@ -704,7 +705,7 @@ static int mkiss_open(struct tty_struct *tty)
 	ax->dev = dev;
 
 	spin_lock_init(&ax->buflock);
-	atomic_set(&ax->refcnt, 1);
+	refcount_set(&ax->refcnt, 1);
 	init_completion(&ax->dead);
 
 	ax->tty = tty;
@@ -743,7 +744,6 @@ static int mkiss_open(struct tty_struct *tty)
 		       ax->dev->name);
 		break;
 	case 0:
-		/* fall through */
 	default:
 		crc_force = 0;
 		printk(KERN_INFO "mkiss: %s: crc mode is auto.\n",
@@ -772,10 +772,10 @@ static void mkiss_close(struct tty_struct *tty)
 {
 	struct mkiss *ax;
 
-	write_lock_bh(&disc_data_lock);
+	write_lock_irq(&disc_data_lock);
 	ax = tty->disc_data;
 	tty->disc_data = NULL;
-	write_unlock_bh(&disc_data_lock);
+	write_unlock_irq(&disc_data_lock);
 
 	if (!ax)
 		return;
@@ -784,7 +784,7 @@ static void mkiss_close(struct tty_struct *tty)
 	 * We have now ensured that nobody can start using ap from now on, but
 	 * we have to wait for all existing users to finish.
 	 */
-	if (!atomic_dec_and_test(&ax->refcnt))
+	if (!refcount_dec_and_test(&ax->refcnt))
 		wait_for_completion(&ax->dead);
 	/*
 	 * Halt the transmit queue so that a new transmit cannot scribble

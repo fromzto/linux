@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 
 /*
  * Linux device driver for ADMtek ADM8211 (IEEE 802.11b MAC/BBP)
@@ -8,11 +9,6 @@
  * and used with permission.
  *
  * Much thanks to Infineon-ADMtek for their support of this driver.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation. See README and COPYING for
- * more details.
  */
 
 #include <linux/interrupt.h>
@@ -1785,8 +1781,8 @@ static int adm8211_probe(struct pci_dev *pdev,
 {
 	struct ieee80211_hw *dev;
 	struct adm8211_priv *priv;
-	unsigned long mem_addr, mem_len;
-	unsigned int io_addr, io_len;
+	unsigned long mem_len;
+	unsigned int io_len;
 	int err;
 	u32 reg;
 	u8 perm_addr[ETH_ALEN];
@@ -1798,9 +1794,7 @@ static int adm8211_probe(struct pci_dev *pdev,
 		return err;
 	}
 
-	io_addr = pci_resource_start(pdev, 0);
 	io_len = pci_resource_len(pdev, 0);
-	mem_addr = pci_resource_start(pdev, 1);
 	mem_len = pci_resource_len(pdev, 1);
 	if (io_len < 256 || mem_len < 1024) {
 		printk(KERN_ERR "%s (adm8211): Too short PCI resources\n",
@@ -1982,24 +1976,12 @@ static void adm8211_remove(struct pci_dev *pdev)
 }
 
 
-#ifdef CONFIG_PM
-static int adm8211_suspend(struct pci_dev *pdev, pm_message_t state)
-{
-	pci_save_state(pdev);
-	pci_set_power_state(pdev, pci_choose_state(pdev, state));
-	return 0;
-}
-
-static int adm8211_resume(struct pci_dev *pdev)
-{
-	pci_set_power_state(pdev, PCI_D0);
-	pci_restore_state(pdev);
-	return 0;
-}
-#endif /* CONFIG_PM */
-
+#define adm8211_suspend NULL
+#define adm8211_resume NULL
 
 MODULE_DEVICE_TABLE(pci, adm8211_pci_id_table);
+
+static SIMPLE_DEV_PM_OPS(adm8211_pm_ops, adm8211_suspend, adm8211_resume);
 
 /* TODO: implement enable_wake */
 static struct pci_driver adm8211_driver = {
@@ -2007,10 +1989,7 @@ static struct pci_driver adm8211_driver = {
 	.id_table	= adm8211_pci_id_table,
 	.probe		= adm8211_probe,
 	.remove		= adm8211_remove,
-#ifdef CONFIG_PM
-	.suspend	= adm8211_suspend,
-	.resume		= adm8211_resume,
-#endif /* CONFIG_PM */
+	.driver.pm	= &adm8211_pm_ops,
 };
 
 module_pci_driver(adm8211_driver);

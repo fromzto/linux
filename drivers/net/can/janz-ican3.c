@@ -1451,7 +1451,7 @@ static int ican3_napi(struct napi_struct *napi, int budget)
 
 	/* process all communication messages */
 	while (true) {
-		struct ican3_msg uninitialized_var(msg);
+		struct ican3_msg msg;
 		ret = ican3_recv_msg(mod, &msg);
 		if (ret)
 			break;
@@ -1936,7 +1936,6 @@ static int ican3_probe(struct platform_device *pdev)
 	/* find our IRQ number */
 	mod->irq = platform_get_irq(pdev, 0);
 	if (mod->irq < 0) {
-		dev_err(dev, "IRQ line not found\n");
 		ret = -ENODEV;
 		goto out_free_ndev;
 	}

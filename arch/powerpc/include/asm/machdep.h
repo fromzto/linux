@@ -3,9 +3,6 @@
 #define _ASM_POWERPC_MACHDEP_H
 #ifdef __KERNEL__
 
-/*
- */
-
 #include <linux/seq_file.h>
 #include <linux/init.h>
 #include <linux/dma-mapping.h>
@@ -31,10 +28,6 @@ struct pci_host_bridge;
 struct machdep_calls {
 	char		*name;
 #ifdef CONFIG_PPC64
-	void __iomem *	(*ioremap)(phys_addr_t addr, unsigned long size,
-				   pgprot_t prot, void *caller);
-	void		(*iounmap)(volatile void __iomem *token);
-
 #ifdef CONFIG_PM
 	void		(*iommu_save)(void);
 	void		(*iommu_restore)(void);
@@ -138,7 +131,7 @@ struct machdep_calls {
 				    unsigned long dabrx);
 
 	/* Set DAWR for this platform, leave empty for default implementation */
-	int		(*set_dawr)(unsigned long dawr,
+	int		(*set_dawr)(int nr, unsigned long dawr,
 				    unsigned long dawrx);
 
 #ifdef CONFIG_PPC32	/* XXX for now */

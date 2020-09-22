@@ -52,6 +52,7 @@ extern unsigned int debug_smp_processor_id(void); /* from linux/smp.h */
 #define get_slb_shadow()	(get_paca()->slb_shadow_ptr)
 
 struct task_struct;
+struct rtas_args;
 
 /*
  * Defines the layout of the paca.
@@ -166,7 +167,9 @@ struct paca_struct {
 	u64 kstack;			/* Saved Kernel stack addr */
 	u64 saved_r1;			/* r1 save for RTAS calls or PM or EE=0 */
 	u64 saved_msr;			/* MSR saved here by enter_rtas */
+#ifdef CONFIG_PPC_BOOK3E
 	u16 trap_save;			/* Used when bad stack is encountered */
+#endif
 	u8 irq_soft_mask;		/* mask for irq soft masking */
 	u8 irq_happened;		/* irq happened while soft-disabled */
 	u8 irq_work_pending;		/* IRQ_WORK interrupt while soft-disable */
@@ -222,6 +225,7 @@ struct paca_struct {
 	u16 in_mce;
 	u8 hmi_event_available;		/* HMI event is available */
 	u8 hmi_p9_special_emu;		/* HMI P9 special emulation */
+	u32 hmi_irqs;			/* HMI irq stat */
 #endif
 	u8 ftrace_enabled;		/* Hard disable ftrace */
 
@@ -254,6 +258,7 @@ struct paca_struct {
 	u64 l1d_flush_size;
 #endif
 #ifdef CONFIG_PPC_PSERIES
+	struct rtas_args *rtas_args_reentrant;
 	u8 *mce_data_buf;		/* buffer to hold per cpu rtas errlog */
 #endif /* CONFIG_PPC_PSERIES */
 

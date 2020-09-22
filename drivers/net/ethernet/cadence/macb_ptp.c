@@ -2,7 +2,7 @@
 /**
  * 1588 PTP support for Cadence GEM device.
  *
- * Copyright (C) 2017 Cadence Design Systems - http://www.cadence.com
+ * Copyright (C) 2017 Cadence Design Systems - https://www.cadence.com
  *
  * Authors: Rafal Ozieblo <rafalo@cadence.com>
  *          Bartosz Folta <bfolta@cadence.com>
@@ -104,7 +104,10 @@ static int gem_tsu_incr_set(struct macb *bp, struct tsu_incr *incr_spec)
 	 * to take effect.
 	 */
 	spin_lock_irqsave(&bp->tsu_clk_lock, flags);
-	gem_writel(bp, TISUBN, GEM_BF(SUBNSINCR, incr_spec->sub_ns));
+	/* RegBit[15:0] = Subns[23:8]; RegBit[31:24] = Subns[7:0] */
+	gem_writel(bp, TISUBN, GEM_BF(SUBNSINCRL, incr_spec->sub_ns) |
+		   GEM_BF(SUBNSINCRH, (incr_spec->sub_ns >>
+			  GEM_SUBNSINCRL_SIZE)));
 	gem_writel(bp, TI, GEM_BF(NSINCR, incr_spec->ns));
 	spin_unlock_irqrestore(&bp->tsu_clk_lock, flags);
 
@@ -135,7 +138,7 @@ static int gem_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 	 * (temp / USEC_PER_SEC) + 0.5
 	 */
 	adj += (USEC_PER_SEC >> 1);
-	adj >>= GEM_SUBNSINCR_SIZE; /* remove fractions */
+	adj >>= PPM_FRACTION; /* remove fractions */
 	adj = div_u64(adj, USEC_PER_SEC);
 	adj = neg_adj ? (word - adj) : (word + adj);
 
@@ -457,7 +460,7 @@ int gem_set_hwtst(struct net_device *dev, struct ifreq *ifr, int cmd)
 	case HWTSTAMP_TX_ONESTEP_SYNC:
 		if (gem_ptp_set_one_step_sync(bp, 1) != 0)
 			return -ERANGE;
-		/* fall through */
+		fallthrough;
 	case HWTSTAMP_TX_ON:
 		tx_bd_control = TSTAMP_ALL_FRAMES;
 		break;

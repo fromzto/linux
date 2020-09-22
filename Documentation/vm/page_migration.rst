@@ -41,7 +41,7 @@ locations.
 Larger installations usually partition the system using cpusets into
 sections of nodes. Paul Jackson has equipped cpusets with the ability to
 move pages when a task is moved to another cpuset (See
-Documentation/cgroup-v1/cpusets.txt).
+Documentation/admin-guide/cgroup-v1/cpusets.rst).
 Cpusets allows the automation of process locality. If a task is moved to
 a new cpuset then also all its pages are moved with it so that the
 performance of the process does not sink dramatically. Also the pages
@@ -252,6 +252,33 @@ which are function pointers of struct address_space_operations.
      shouldn't touch page.lru field.
      PG_isolated is alias with PG_reclaim flag so driver shouldn't use the flag
      for own purpose.
+
+Monitoring Migration
+=====================
+
+The following events (counters) can be used to monitor page migration.
+
+1. PGMIGRATE_SUCCESS: Normal page migration success. Each count means that a
+   page was migrated. If the page was a non-THP page, then this counter is
+   increased by one. If the page was a THP, then this counter is increased by
+   the number of THP subpages. For example, migration of a single 2MB THP that
+   has 4KB-size base pages (subpages) will cause this counter to increase by
+   512.
+
+2. PGMIGRATE_FAIL: Normal page migration failure. Same counting rules as for
+   _SUCCESS, above: this will be increased by the number of subpages, if it was
+   a THP.
+
+3. THP_MIGRATION_SUCCESS: A THP was migrated without being split.
+
+4. THP_MIGRATION_FAIL: A THP could not be migrated nor it could be split.
+
+5. THP_MIGRATION_SPLIT: A THP was migrated, but not as such: first, the THP had
+   to be split. After splitting, a migration retry was used for it's sub-pages.
+
+THP_MIGRATION_* events also update the appropriate PGMIGRATE_SUCCESS or
+PGMIGRATE_FAIL events. For example, a THP migration failure will cause both
+THP_MIGRATION_FAIL and PGMIGRATE_FAIL to increase.
 
 Christoph Lameter, May 8, 2006.
 Minchan Kim, Mar 28, 2016.

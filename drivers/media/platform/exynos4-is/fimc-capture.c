@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Samsung S5P/EXYNOS4 SoC series camera interface (camera capture) driver
  *
  * Copyright (C) 2010 - 2012 Samsung Electronics Co., Ltd.
  * Sylwester Nawrocki <s.nawrocki@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -24,6 +21,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-mem2mem.h>
+#include <media/v4l2-rect.h>
 #include <media/videobuf2-v4l2.h>
 #include <media/videobuf2-dma-contig.h>
 
@@ -481,8 +479,10 @@ static int fimc_capture_open(struct file *file)
 
 	set_bit(ST_CAPT_BUSY, &fimc->state);
 	ret = pm_runtime_get_sync(&fimc->pdev->dev);
-	if (ret < 0)
+	if (ret < 0) {
+		pm_runtime_put_sync(&fimc->pdev->dev);
 		goto unlock;
+	}
 
 	ret = v4l2_fh_open(file);
 	if (ret) {
@@ -728,13 +728,12 @@ static int fimc_cap_querycap(struct file *file, void *priv,
 {
 	struct fimc_dev *fimc = video_drvdata(file);
 
-	__fimc_vidioc_querycap(&fimc->pdev->dev, cap, V4L2_CAP_STREAMING |
-					V4L2_CAP_VIDEO_CAPTURE_MPLANE);
+	__fimc_vidioc_querycap(&fimc->pdev->dev, cap);
 	return 0;
 }
 
-static int fimc_cap_enum_fmt_mplane(struct file *file, void *priv,
-				    struct v4l2_fmtdesc *f)
+static int fimc_cap_enum_fmt(struct file *file, void *priv,
+			     struct v4l2_fmtdesc *f)
 {
 	struct fimc_fmt *fmt;
 
@@ -742,10 +741,7 @@ static int fimc_cap_enum_fmt_mplane(struct file *file, void *priv,
 			       f->index);
 	if (!fmt)
 		return -EINVAL;
-	strscpy(f->description, fmt->name, sizeof(f->description));
 	f->pixelformat = fmt->fourcc;
-	if (fmt->fourcc == MEDIA_BUS_FMT_JPEG_1X8)
-		f->flags |= V4L2_FMT_FLAG_COMPRESSED;
 	return 0;
 }
 
@@ -1306,19 +1302,6 @@ static int fimc_cap_g_selection(struct file *file, void *fh,
 	return -EINVAL;
 }
 
-/* Return 1 if rectangle a is enclosed in rectangle b, or 0 otherwise. */
-static int enclosed_rectangle(struct v4l2_rect *a, struct v4l2_rect *b)
-{
-	if (a->left < b->left || a->top < b->top)
-		return 0;
-	if (a->left + a->width > b->left + b->width)
-		return 0;
-	if (a->top + a->height > b->top + b->height)
-		return 0;
-
-	return 1;
-}
-
 static int fimc_cap_s_selection(struct file *file, void *fh,
 				struct v4l2_selection *s)
 {
@@ -1341,11 +1324,11 @@ static int fimc_cap_s_selection(struct file *file, void *fh,
 	fimc_capture_try_selection(ctx, &rect, s->target);
 
 	if (s->flags & V4L2_SEL_FLAG_LE &&
-	    !enclosed_rectangle(&rect, &s->r))
+	    !v4l2_rect_enclosed(&rect, &s->r))
 		return -ERANGE;
 
 	if (s->flags & V4L2_SEL_FLAG_GE &&
-	    !enclosed_rectangle(&s->r, &rect))
+	    !v4l2_rect_enclosed(&s->r, &rect))
 		return -ERANGE;
 
 	s->r = rect;
@@ -1361,7 +1344,7 @@ static int fimc_cap_s_selection(struct file *file, void *fh,
 static const struct v4l2_ioctl_ops fimc_capture_ioctl_ops = {
 	.vidioc_querycap		= fimc_cap_querycap,
 
-	.vidioc_enum_fmt_vid_cap_mplane	= fimc_cap_enum_fmt_mplane,
+	.vidioc_enum_fmt_vid_cap	= fimc_cap_enum_fmt,
 	.vidioc_try_fmt_vid_cap_mplane	= fimc_cap_try_fmt_mplane,
 	.vidioc_s_fmt_vid_cap_mplane	= fimc_cap_s_fmt_mplane,
 	.vidioc_g_fmt_vid_cap_mplane	= fimc_cap_g_fmt_mplane,
@@ -1765,6 +1748,7 @@ static int fimc_register_capture_device(struct fimc_dev *fimc,
 	vfd->release	= video_device_release_empty;
 	vfd->queue	= q;
 	vfd->lock	= &fimc->lock;
+	vfd->device_caps = V4L2_CAP_STREAMING | V4L2_CAP_VIDEO_CAPTURE_MPLANE;
 
 	video_set_drvdata(vfd, fimc);
 	vid_cap = &fimc->vid_cap;
@@ -1814,7 +1798,7 @@ static int fimc_register_capture_device(struct fimc_dev *fimc,
 	if (ret)
 		goto err_me_cleanup;
 
-	ret = video_register_device(vfd, VFL_TYPE_GRABBER, -1);
+	ret = video_register_device(vfd, VFL_TYPE_VIDEO, -1);
 	if (ret)
 		goto err_ctrl_free;
 

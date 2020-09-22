@@ -1,10 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2011-2016 Synaptics Incorporated
  * Copyright (c) 2011 Unixphere
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  */
 
 #ifndef _RMI_H
@@ -209,7 +206,7 @@ struct rmi_device_platform_data_spi {
  *
  * @reset_delay_ms - after issuing a reset command to the touch sensor, the
  * driver waits a few milliseconds to give the firmware a chance to
- * to re-initialize.  You can override the default wait period here.
+ * re-initialize.  You can override the default wait period here.
  * @irq: irq associated with the attn gpio line, or negative
  */
 struct rmi_device_platform_data {

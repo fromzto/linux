@@ -64,8 +64,6 @@ struct dm_table {
 	void *event_context;
 
 	struct dm_md_mempools *mempools;
-
-	struct list_head target_callbacks;
 };
 
 /*
@@ -163,10 +161,8 @@ static int alloc_targets(struct dm_table *t, unsigned int num)
 
 	/*
 	 * Allocate both the target array and offset array at once.
-	 * Append an empty entry to catch sectors beyond the end of
-	 * the device.
 	 */
-	n_highs = (sector_t *) dm_vcalloc(num + 1, sizeof(struct dm_target) +
+	n_highs = (sector_t *) dm_vcalloc(num, sizeof(struct dm_target) +
 					  sizeof(sector_t));
 	if (!n_highs)
 		return -ENOMEM;
@@ -192,7 +188,6 @@ int dm_table_create(struct dm_table **result, fmode_t mode,
 		return -ENOMEM;
 
 	INIT_LIST_HEAD(&t->devices);
-	INIT_LIST_HEAD(&t->target_callbacks);
 
 	if (!num_targets)
 		num_targets = KEYS_PER_NODE;
@@ -281,7 +276,6 @@ static struct dm_dev_internal *find_device(struct list_head *l, dev_t dev)
 static int device_area_is_invalid(struct dm_target *ti, struct dm_dev *dev,
 				  sector_t start, sector_t len, void *data)
 {
-	struct request_queue *q;
 	struct queue_limits *limits = data;
 	struct block_device *bdev = dev->bdev;
 	sector_t dev_size =
@@ -289,22 +283,6 @@ static int device_area_is_invalid(struct dm_target *ti, struct dm_dev *dev,
 	unsigned short logical_block_size_sectors =
 		limits->logical_block_size >> SECTOR_SHIFT;
 	char b[BDEVNAME_SIZE];
-
-	/*
-	 * Some devices exist without request functions,
-	 * such as loop devices not yet bound to backing files.
-	 * Forbid the use of such devices.
-	 */
-	q = bdev_get_queue(bdev);
-	if (!q || !q->make_request_fn) {
-		DMWARN("%s: %s is not yet initialised: "
-		       "start=%llu, len=%llu, dev_size=%llu",
-		       dm_device_name(ti->table->md), bdevname(bdev, b),
-		       (unsigned long long)start,
-		       (unsigned long long)len,
-		       (unsigned long long)dev_size);
-		return 1;
-	}
 
 	if (!dev_size)
 		return 0;
@@ -380,7 +358,7 @@ static int device_area_is_invalid(struct dm_target *ti, struct dm_dev *dev,
  * This upgrades the mode on an already open dm_dev, being
  * careful to leave things as they were if we fail to reopen the
  * device and not to touch the existing bdev field in case
- * it is accessed concurrently inside dm_table_any_congested().
+ * it is accessed concurrently.
  */
 static int upgrade_mode(struct dm_dev_internal *dd, fmode_t new_mode,
 			struct mapped_device *md)
@@ -480,7 +458,8 @@ static int dm_set_device_limits(struct dm_target *ti, struct dm_dev *dev,
 		return 0;
 	}
 
-	if (bdev_stack_limits(limits, bdev, start) < 0)
+	if (blk_stack_limits(limits, &q->limits,
+			get_start_sect(bdev) + start) < 0)
 		DMWARN("%s: adding target device %s caused an alignment inconsistency: "
 		       "physical_block_size=%u, logical_block_size=%u, "
 		       "alignment_offset=%u, start=%llu",
@@ -489,9 +468,6 @@ static int dm_set_device_limits(struct dm_target *ti, struct dm_dev *dev,
 		       q->limits.logical_block_size,
 		       q->limits.alignment_offset,
 		       (unsigned long long) start << SECTOR_SHIFT);
-
-	limits->zoned = blk_queue_zoned_model(q);
-
 	return 0;
 }
 
@@ -561,7 +537,7 @@ static char **realloc_argv(unsigned *size, char **old_argv)
 		gfp = GFP_NOIO;
 	}
 	argv = kmalloc_array(new_size, sizeof(*argv), gfp);
-	if (argv) {
+	if (argv && old_argv) {
 		memcpy(argv, old_argv, *size * sizeof(*argv));
 		*size = new_size;
 	}
@@ -661,7 +637,7 @@ static int validate_hardware_logical_block_alignment(struct dm_table *table,
 	 */
 	unsigned short remaining = 0;
 
-	struct dm_target *uninitialized_var(ti);
+	struct dm_target *ti;
 	struct queue_limits ti_limits;
 	unsigned i;
 
@@ -881,16 +857,28 @@ void dm_table_set_type(struct dm_table *t, enum dm_queue_mode type)
 EXPORT_SYMBOL_GPL(dm_table_set_type);
 
 /* validate the dax capability of the target device span */
-static int device_supports_dax(struct dm_target *ti, struct dm_dev *dev,
-				       sector_t start, sector_t len, void *data)
+int device_supports_dax(struct dm_target *ti, struct dm_dev *dev,
+			sector_t start, sector_t len, void *data)
 {
-	int blocksize = *(int *) data;
+	int blocksize = *(int *) data, id;
+	bool rc;
 
-	return generic_fsdax_supported(dev->dax_dev, dev->bdev, blocksize,
-			start, len);
+	id = dax_read_lock();
+	rc = dax_supported(dev->dax_dev, dev->bdev, blocksize, start, len);
+	dax_read_unlock(id);
+
+	return rc;
 }
 
-bool dm_table_supports_dax(struct dm_table *t, int blocksize)
+/* Check devices support synchronous DAX */
+static int device_dax_synchronous(struct dm_target *ti, struct dm_dev *dev,
+				  sector_t start, sector_t len, void *data)
+{
+	return dev->dax_dev && dax_synchronous(dev->dax_dev);
+}
+
+bool dm_table_supports_dax(struct dm_table *t,
+			   iterate_devices_callout_fn iterate_fn, int *blocksize)
 {
 	struct dm_target *ti;
 	unsigned i;
@@ -903,8 +891,7 @@ bool dm_table_supports_dax(struct dm_table *t, int blocksize)
 			return false;
 
 		if (!ti->type->iterate_devices ||
-		    !ti->type->iterate_devices(ti, device_supports_dax,
-			    &blocksize))
+		    !ti->type->iterate_devices(ti, iterate_fn, blocksize))
 			return false;
 	}
 
@@ -913,21 +900,15 @@ bool dm_table_supports_dax(struct dm_table *t, int blocksize)
 
 static bool dm_table_does_not_support_partial_completion(struct dm_table *t);
 
-struct verify_rq_based_data {
-	unsigned sq_count;
-	unsigned mq_count;
-};
-
-static int device_is_rq_based(struct dm_target *ti, struct dm_dev *dev,
-			      sector_t start, sector_t len, void *data)
+static int device_is_rq_stackable(struct dm_target *ti, struct dm_dev *dev,
+				  sector_t start, sector_t len, void *data)
 {
-	struct request_queue *q = bdev_get_queue(dev->bdev);
-	struct verify_rq_based_data *v = data;
+	struct block_device *bdev = dev->bdev;
+	struct request_queue *q = bdev_get_queue(bdev);
 
-	if (queue_is_mq(q))
-		v->mq_count++;
-	else
-		v->sq_count++;
+	/* request-based cannot stack on partitions! */
+	if (bdev != bdev->bd_contains)
+		return false;
 
 	return queue_is_mq(q);
 }
@@ -936,10 +917,10 @@ static int dm_table_determine_type(struct dm_table *t)
 {
 	unsigned i;
 	unsigned bio_based = 0, request_based = 0, hybrid = 0;
-	struct verify_rq_based_data v = {.sq_count = 0, .mq_count = 0};
 	struct dm_target *tgt;
 	struct list_head *devices = dm_table_get_devices(t);
 	enum dm_queue_mode live_md_type = dm_get_md_type(t->md);
+	int page_size = PAGE_SIZE;
 
 	if (t->type != DM_TYPE_NONE) {
 		/* target already set the table's type */
@@ -984,7 +965,7 @@ static int dm_table_determine_type(struct dm_table *t)
 verify_bio_based:
 		/* We must use this table as bio-based */
 		t->type = DM_TYPE_BIO_BASED;
-		if (dm_table_supports_dax(t, PAGE_SIZE) ||
+		if (dm_table_supports_dax(t, device_supports_dax, &page_size) ||
 		    (list_empty(devices) && live_md_type == DM_TYPE_DAX_BIO_BASED)) {
 			t->type = DM_TYPE_DAX_BIO_BASED;
 		} else {
@@ -1039,12 +1020,8 @@ verify_rq_based:
 
 	/* Non-request-stackable devices can't be used for request-based dm */
 	if (!tgt->type->iterate_devices ||
-	    !tgt->type->iterate_devices(tgt, device_is_rq_based, &v)) {
+	    !tgt->type->iterate_devices(tgt, device_is_rq_stackable, NULL)) {
 		DMERR("table load rejected: including non-request-stackable devices");
-		return -EINVAL;
-	}
-	if (v.sq_count > 0) {
-		DMERR("table load rejected: not all devices are blk-mq request-stackable");
 		return -EINVAL;
 	}
 
@@ -1334,7 +1311,7 @@ void dm_table_event(struct dm_table *t)
 }
 EXPORT_SYMBOL(dm_table_event);
 
-sector_t dm_table_get_size(struct dm_table *t)
+inline sector_t dm_table_get_size(struct dm_table *t)
 {
 	return t->num_targets ? (t->highs[t->num_targets - 1] + 1) : 0;
 }
@@ -1351,13 +1328,16 @@ struct dm_target *dm_table_get_target(struct dm_table *t, unsigned int index)
 /*
  * Search the btree for the correct target.
  *
- * Caller should check returned pointer with dm_target_is_valid()
+ * Caller should check returned pointer for NULL
  * to trap I/O beyond end of device.
  */
 struct dm_target *dm_table_find_target(struct dm_table *t, sector_t sector)
 {
 	unsigned int l, n = 0, k = 0;
 	sector_t *node;
+
+	if (unlikely(sector >= dm_table_get_size(t)))
+		return NULL;
 
 	for (l = 0; l < t->depth; l++) {
 		n = get_child(n, k);
@@ -1550,22 +1530,6 @@ combine_limits:
 			       dm_device_name(table->md),
 			       (unsigned long long) ti->begin,
 			       (unsigned long long) ti->len);
-
-		/*
-		 * FIXME: this should likely be moved to blk_stack_limits(), would
-		 * also eliminate limits->zoned stacking hack in dm_set_device_limits()
-		 */
-		if (limits->zoned == BLK_ZONED_NONE && ti_limits.zoned != BLK_ZONED_NONE) {
-			/*
-			 * By default, the stacked limits zoned model is set to
-			 * BLK_ZONED_NONE in blk_set_stacking_limits(). Update
-			 * this model using the first target model reported
-			 * that is not BLK_ZONED_NONE. This will be either the
-			 * first target device zoned model or the model reported
-			 * by the target .io_hints.
-			 */
-			limits->zoned = ti_limits.zoned;
-		}
 	}
 
 	/*
@@ -1883,6 +1847,7 @@ void dm_table_set_restrictions(struct dm_table *t, struct request_queue *q,
 			       struct queue_limits *limits)
 {
 	bool wc = false, fua = false;
+	int page_size = PAGE_SIZE;
 
 	/*
 	 * Copy table's limits to the DM device's request_queue
@@ -1910,8 +1875,11 @@ void dm_table_set_restrictions(struct dm_table *t, struct request_queue *q,
 	}
 	blk_queue_write_cache(q, wc, fua);
 
-	if (dm_table_supports_dax(t, PAGE_SIZE))
+	if (dm_table_supports_dax(t, device_supports_dax, &page_size)) {
 		blk_queue_flag_set(QUEUE_FLAG_DAX, q);
+		if (dm_table_supports_dax(t, device_dax_synchronous, NULL))
+			set_dax_synchronous(t->md->dax_dev);
+	}
 	else
 		blk_queue_flag_clear(QUEUE_FLAG_DAX, q);
 
@@ -1952,12 +1920,14 @@ void dm_table_set_restrictions(struct dm_table *t, struct request_queue *q,
 	/*
 	 * For a zoned target, the number of zones should be updated for the
 	 * correct value to be exposed in sysfs queue/nr_zones. For a BIO based
-	 * target, this is all that is needed. For a request based target, the
-	 * queue zone bitmaps must also be updated.
-	 * Use blk_revalidate_disk_zones() to handle this.
+	 * target, this is all that is needed.
 	 */
-	if (blk_queue_is_zoned(q))
-		blk_revalidate_disk_zones(t->md->disk);
+#ifdef CONFIG_BLK_DEV_ZONED
+	if (blk_queue_is_zoned(q)) {
+		WARN_ON_ONCE(queue_is_mq(q));
+		q->nr_zones = blkdev_nr_zones(t->md->disk);
+	}
+#endif
 
 	/* Allow reads to exceed readahead limits */
 	q->backing_dev_info->io_pages = limits->max_sectors >> (PAGE_SHIFT - 9);
@@ -2063,38 +2033,6 @@ int dm_table_resume_targets(struct dm_table *t)
 	}
 
 	return 0;
-}
-
-void dm_table_add_target_callbacks(struct dm_table *t, struct dm_target_callbacks *cb)
-{
-	list_add(&cb->list, &t->target_callbacks);
-}
-EXPORT_SYMBOL_GPL(dm_table_add_target_callbacks);
-
-int dm_table_any_congested(struct dm_table *t, int bdi_bits)
-{
-	struct dm_dev_internal *dd;
-	struct list_head *devices = dm_table_get_devices(t);
-	struct dm_target_callbacks *cb;
-	int r = 0;
-
-	list_for_each_entry(dd, devices, list) {
-		struct request_queue *q = bdev_get_queue(dd->dm_dev->bdev);
-		char b[BDEVNAME_SIZE];
-
-		if (likely(q))
-			r |= bdi_congested(q->backing_dev_info, bdi_bits);
-		else
-			DMWARN_LIMIT("%s: any_congested: nonexistent device %s",
-				     dm_device_name(t->md),
-				     bdevname(dd->dm_dev->bdev, b));
-	}
-
-	list_for_each_entry(cb, &t->target_callbacks, list)
-		if (cb->congested_fn)
-			r |= cb->congested_fn(cb, bdi_bits);
-
-	return r;
 }
 
 struct mapped_device *dm_table_get_md(struct dm_table *t)

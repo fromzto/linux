@@ -733,6 +733,8 @@ static int sun6i_csi_v4l2_init(struct sun6i_csi *csi)
 	strscpy(csi->media_dev.model, "Allwinner Video Capture Device",
 		sizeof(csi->media_dev.model));
 	csi->media_dev.hw_revision = 0;
+	snprintf(csi->media_dev.bus_info, sizeof(csi->media_dev.bus_info),
+		 "platform:%s", dev_name(csi->dev));
 
 	media_device_init(&csi->media_dev);
 	v4l2_async_notifier_init(&csi->notifier);
@@ -866,11 +868,8 @@ static int sun6i_csi_resource_request(struct sun6i_csi_dev *sdev,
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		dev_err(&pdev->dev, "No csi IRQ specified\n");
-		ret = -ENXIO;
-		return ret;
-	}
+	if (irq < 0)
+		return -ENXIO;
 
 	ret = devm_request_irq(&pdev->dev, irq, sun6i_csi_isr, 0, MODULE_NAME,
 			       sdev);
@@ -924,6 +923,7 @@ static int sun6i_csi_remove(struct platform_device *pdev)
 
 static const struct of_device_id sun6i_csi_of_match[] = {
 	{ .compatible = "allwinner,sun6i-a31-csi", },
+	{ .compatible = "allwinner,sun8i-a83t-csi", },
 	{ .compatible = "allwinner,sun8i-h3-csi", },
 	{ .compatible = "allwinner,sun8i-v3s-csi", },
 	{ .compatible = "allwinner,sun50i-a64-csi", },

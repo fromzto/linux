@@ -19,27 +19,15 @@
 #include "raid0.h"
 #include "raid5.h"
 
+static int default_layout = 0;
+module_param(default_layout, int, 0644);
+
 #define UNSUPPORTED_MDDEV_FLAGS		\
 	((1L << MD_HAS_JOURNAL) |	\
 	 (1L << MD_JOURNAL_CLEAN) |	\
 	 (1L << MD_FAILFAST_SUPPORTED) |\
 	 (1L << MD_HAS_PPL) |		\
 	 (1L << MD_HAS_MULTIPLE_PPLS))
-
-static int raid0_congested(struct mddev *mddev, int bits)
-{
-	struct r0conf *conf = mddev->private;
-	struct md_rdev **devlist = conf->devlist;
-	int raid_disks = conf->strip_zone[0].nb_dev;
-	int i, ret = 0;
-
-	for (i = 0; i < raid_disks && !ret ; i++) {
-		struct request_queue *q = bdev_get_queue(devlist[i]->bdev);
-
-		ret |= bdi_congested(q->backing_dev_info, bits);
-	}
-	return ret;
-}
 
 /*
  * inform the user of the raid configuration
@@ -84,7 +72,7 @@ static int create_strip_zones(struct mddev *mddev, struct r0conf **private_conf)
 	char b[BDEVNAME_SIZE];
 	char b2[BDEVNAME_SIZE];
 	struct r0conf *conf = kzalloc(sizeof(*conf), GFP_KERNEL);
-	unsigned short blksize = 512;
+	unsigned blksize = 512;
 
 	*private_conf = ERR_PTR(-ENOMEM);
 	if (!conf)
@@ -139,6 +127,22 @@ static int create_strip_zones(struct mddev *mddev, struct r0conf **private_conf)
 	}
 	pr_debug("md/raid0:%s: FINAL %d zones\n",
 		 mdname(mddev), conf->nr_strip_zones);
+
+	if (conf->nr_strip_zones == 1) {
+		conf->layout = RAID0_ORIG_LAYOUT;
+	} else if (mddev->layout == RAID0_ORIG_LAYOUT ||
+		   mddev->layout == RAID0_ALT_MULTIZONE_LAYOUT) {
+		conf->layout = mddev->layout;
+	} else if (default_layout == RAID0_ORIG_LAYOUT ||
+		   default_layout == RAID0_ALT_MULTIZONE_LAYOUT) {
+		conf->layout = default_layout;
+	} else {
+		pr_err("md/raid0:%s: cannot assemble multi-zone RAID0 with default_layout setting\n",
+		       mdname(mddev));
+		pr_err("md/raid0: please set raid0.default_layout to 1 or 2\n");
+		err = -ENOTSUPP;
+		goto abort;
+	}
 	/*
 	 * now since we have the hard sector sizes, we can make sure
 	 * chunk size is a multiple of that sector size
@@ -476,7 +480,7 @@ static void raid0_handle_discard(struct mddev *mddev, struct bio *bio)
 			zone->zone_end - bio->bi_iter.bi_sector, GFP_NOIO,
 			&mddev->bio_set);
 		bio_chain(split, bio);
-		generic_make_request(bio);
+		submit_bio_noacct(bio);
 		bio = split;
 		end = zone->zone_end;
 	} else
@@ -540,24 +544,25 @@ static void raid0_handle_discard(struct mddev *mddev, struct bio *bio)
 			trace_block_bio_remap(bdev_get_queue(rdev->bdev),
 				discard_bio, disk_devt(mddev->gendisk),
 				bio->bi_iter.bi_sector);
-		generic_make_request(discard_bio);
+		submit_bio_noacct(discard_bio);
 	}
 	bio_endio(bio);
 }
 
 static bool raid0_make_request(struct mddev *mddev, struct bio *bio)
 {
+	struct r0conf *conf = mddev->private;
 	struct strip_zone *zone;
 	struct md_rdev *tmp_dev;
 	sector_t bio_sector;
 	sector_t sector;
+	sector_t orig_sector;
 	unsigned chunk_sects;
 	unsigned sectors;
 
-	if (unlikely(bio->bi_opf & REQ_PREFLUSH)) {
-		md_flush_request(mddev, bio);
+	if (unlikely(bio->bi_opf & REQ_PREFLUSH)
+	    && md_flush_request(mddev, bio))
 		return true;
-	}
 
 	if (unlikely((bio_op(bio) == REQ_OP_DISCARD))) {
 		raid0_handle_discard(mddev, bio);
@@ -580,12 +585,30 @@ static bool raid0_make_request(struct mddev *mddev, struct bio *bio)
 		struct bio *split = bio_split(bio, sectors, GFP_NOIO,
 					      &mddev->bio_set);
 		bio_chain(split, bio);
-		generic_make_request(bio);
+		submit_bio_noacct(bio);
 		bio = split;
 	}
 
+	orig_sector = sector;
 	zone = find_zone(mddev->private, &sector);
-	tmp_dev = map_sector(mddev, zone, sector, &sector);
+	switch (conf->layout) {
+	case RAID0_ORIG_LAYOUT:
+		tmp_dev = map_sector(mddev, zone, orig_sector, &sector);
+		break;
+	case RAID0_ALT_MULTIZONE_LAYOUT:
+		tmp_dev = map_sector(mddev, zone, sector, &sector);
+		break;
+	default:
+		WARN(1, "md/raid0:%s: Invalid layout\n", mdname(mddev));
+		bio_io_error(bio);
+		return true;
+	}
+
+	if (unlikely(is_mddev_broken(tmp_dev, "raid0"))) {
+		bio_io_error(bio);
+		return true;
+	}
+
 	bio_set_dev(bio, tmp_dev->bdev);
 	bio->bi_iter.bi_sector = sector + zone->dev_start +
 		tmp_dev->data_offset;
@@ -595,7 +618,7 @@ static bool raid0_make_request(struct mddev *mddev, struct bio *bio)
 				disk_devt(mddev->gendisk), bio_sector);
 	mddev_check_writesame(mddev, bio);
 	mddev_check_write_zeroes(mddev, bio);
-	generic_make_request(bio);
+	submit_bio_noacct(bio);
 	return true;
 }
 
@@ -780,7 +803,6 @@ static struct md_personality raid0_personality=
 	.size		= raid0_size,
 	.takeover	= raid0_takeover,
 	.quiesce	= raid0_quiesce,
-	.congested	= raid0_congested,
 };
 
 static int __init raid0_init (void)

@@ -72,6 +72,7 @@ static struct xfrm_state *ipcomp_tunnel_create(struct xfrm_state *x)
 	t->props.flags = x->props.flags;
 	t->props.extra_flags = x->props.extra_flags;
 	memcpy(&t->mark, &x->mark, sizeof(t->mark));
+	t->if_id = x->if_id;
 
 	if (xfrm_init_state(t))
 		goto error;
@@ -186,8 +187,7 @@ static void __exit ipcomp4_fini(void)
 {
 	if (xfrm4_protocol_deregister(&ipcomp4_protocol, IPPROTO_COMP) < 0)
 		pr_info("%s: can't remove protocol\n", __func__);
-	if (xfrm_unregister_type(&ipcomp_type, AF_INET) < 0)
-		pr_info("%s: can't remove xfrm type\n", __func__);
+	xfrm_unregister_type(&ipcomp_type, AF_INET);
 }
 
 module_init(ipcomp4_init);

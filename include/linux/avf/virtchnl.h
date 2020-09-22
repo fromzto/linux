@@ -61,12 +61,14 @@ enum virtchnl_status_code {
 #define VIRTCHNL_ERR_PARAM VIRTCHNL_STATUS_ERR_PARAM
 #define VIRTCHNL_STATUS_NOT_SUPPORTED VIRTCHNL_STATUS_ERR_NOT_SUPPORTED
 
+#define VIRTCHNL_LINK_SPEED_2_5GB_SHIFT		0x0
 #define VIRTCHNL_LINK_SPEED_100MB_SHIFT		0x1
 #define VIRTCHNL_LINK_SPEED_1000MB_SHIFT	0x2
 #define VIRTCHNL_LINK_SPEED_10GB_SHIFT		0x3
 #define VIRTCHNL_LINK_SPEED_40GB_SHIFT		0x4
 #define VIRTCHNL_LINK_SPEED_20GB_SHIFT		0x5
 #define VIRTCHNL_LINK_SPEED_25GB_SHIFT		0x6
+#define VIRTCHNL_LINK_SPEED_5GB_SHIFT		0x7
 
 enum virtchnl_link_speed {
 	VIRTCHNL_LINK_SPEED_UNKNOWN	= 0,
@@ -76,6 +78,8 @@ enum virtchnl_link_speed {
 	VIRTCHNL_LINK_SPEED_40GB	= BIT(VIRTCHNL_LINK_SPEED_40GB_SHIFT),
 	VIRTCHNL_LINK_SPEED_20GB	= BIT(VIRTCHNL_LINK_SPEED_20GB_SHIFT),
 	VIRTCHNL_LINK_SPEED_25GB	= BIT(VIRTCHNL_LINK_SPEED_25GB_SHIFT),
+	VIRTCHNL_LINK_SPEED_2_5GB	= BIT(VIRTCHNL_LINK_SPEED_2_5GB_SHIFT),
+	VIRTCHNL_LINK_SPEED_5GB		= BIT(VIRTCHNL_LINK_SPEED_5GB_SHIFT),
 };
 
 /* for hsplit_0 field of Rx HMC context */
@@ -472,6 +476,7 @@ struct virtchnl_rss_key {
 	u16 vsi_id;
 	u16 key_len;
 	u8 key[1];         /* RSS hash key, packed bytes */
+	u8 pad[1];
 };
 
 VIRTCHNL_CHECK_STRUCT_LEN(6, virtchnl_rss_key);
@@ -480,6 +485,7 @@ struct virtchnl_rss_lut {
 	u16 vsi_id;
 	u16 lut_entries;
 	u8 lut[1];        /* RSS lookup table */
+	u8 pad[1];
 };
 
 VIRTCHNL_CHECK_STRUCT_LEN(6, virtchnl_rss_lut);
@@ -568,6 +574,7 @@ struct virtchnl_filter {
 	enum	virtchnl_action action;
 	u32	action_meta;
 	u8	field_flags;
+	u8	pad[3];
 };
 
 VIRTCHNL_CHECK_STRUCT_LEN(272, virtchnl_filter);
@@ -606,6 +613,7 @@ struct virtchnl_pf_event {
 			/* link_speed provided in Mbps */
 			u32 link_speed;
 			u8 link_status;
+			u8 pad[3];
 		} link_event_adv;
 	} event_data;
 
@@ -631,6 +639,7 @@ struct virtchnl_iwarp_qv_info {
 	u16 ceq_idx;
 	u16 aeq_idx;
 	u8 itr_idx;
+	u8 pad[3];
 };
 
 VIRTCHNL_CHECK_STRUCT_LEN(12, virtchnl_iwarp_qv_info);

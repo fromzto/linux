@@ -294,7 +294,7 @@ void nr_destroy_socket(struct sock *sk)
  */
 
 static int nr_setsockopt(struct socket *sock, int level, int optname,
-	char __user *optval, unsigned int optlen)
+		sockptr_t optval, unsigned int optlen)
 {
 	struct sock *sk = sock->sk;
 	struct nr_sock *nr = nr_sk(sk);
@@ -306,7 +306,7 @@ static int nr_setsockopt(struct socket *sock, int level, int optname,
 	if (optlen < sizeof(unsigned int))
 		return -EINVAL;
 
-	if (get_user(opt, (unsigned int __user *)optval))
+	if (copy_from_sockptr(&opt, optval, sizeof(unsigned int)))
 		return -EFAULT;
 
 	switch (optname) {
@@ -869,7 +869,7 @@ int nr_rx_frame(struct sk_buff *skb, struct net_device *dev)
 	unsigned short frametype, flags, window, timeout;
 	int ret;
 
-	skb->sk = NULL;		/* Initially we don't know who it's for */
+	skb_orphan(skb);
 
 	/*
 	 *	skb->data points to the netrom frame start
@@ -967,7 +967,9 @@ int nr_rx_frame(struct sk_buff *skb, struct net_device *dev)
 
 	window = skb->data[20];
 
+	sock_hold(make);
 	skb->sk             = make;
+	skb->destructor     = sock_efree;
 	make->sk_state	    = TCP_ESTABLISHED;
 
 	/* Fill in his circuit details */
@@ -1250,6 +1252,7 @@ static int nr_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 #ifdef CONFIG_PROC_FS
 
 static void *nr_info_start(struct seq_file *seq, loff_t *pos)
+	__acquires(&nr_list_lock)
 {
 	spin_lock_bh(&nr_list_lock);
 	return seq_hlist_start_head(&nr_list, *pos);
@@ -1261,6 +1264,7 @@ static void *nr_info_next(struct seq_file *seq, void *v, loff_t *pos)
 }
 
 static void nr_info_stop(struct seq_file *seq, void *v)
+	__releases(&nr_list_lock)
 {
 	spin_unlock_bh(&nr_list_lock);
 }

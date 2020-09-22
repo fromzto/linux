@@ -115,7 +115,7 @@ static const struct power_supply_desc rt5033_battery_desc = {
 static int rt5033_battery_probe(struct i2c_client *client,
 		const struct i2c_device_id *id)
 {
-	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
+	struct i2c_adapter *adapter = client->adapter;
 	struct power_supply_config psy_cfg = {};
 	struct rt5033_battery *battery;
 	u32 ret;
@@ -125,7 +125,7 @@ static int rt5033_battery_probe(struct i2c_client *client,
 
 	battery = devm_kzalloc(&client->dev, sizeof(*battery), GFP_KERNEL);
 	if (!battery)
-		return -EINVAL;
+		return -ENOMEM;
 
 	battery->client = client;
 	battery->regmap = devm_regmap_init_i2c(client,

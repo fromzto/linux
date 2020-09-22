@@ -65,11 +65,9 @@
  */
 #define RXE_UVERBS_ABI_VERSION		2
 
-#define RDMA_LINK_PHYS_STATE_LINK_UP	(5)
-#define RDMA_LINK_PHYS_STATE_DISABLED	(3)
-#define RDMA_LINK_PHYS_STATE_POLLING	(2)
-
 #define RXE_ROCE_V2_SPORT		(0xc000)
+
+extern bool rxe_initialized;
 
 static inline u32 rxe_crc32(struct rxe_dev *rxe,
 			    u32 crc, void *next, size_t len)

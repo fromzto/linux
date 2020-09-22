@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2012 Michael Ellerman, IBM Corporation.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2, as
- * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -232,7 +229,9 @@ int kvmppc_rtas_hcall(struct kvm_vcpu *vcpu)
 	 */
 	args_phys = kvmppc_get_gpr(vcpu, 4) & KVM_PAM;
 
+	vcpu->srcu_idx = srcu_read_lock(&vcpu->kvm->srcu);
 	rc = kvm_read_guest(vcpu->kvm, args_phys, &args, sizeof(args));
+	srcu_read_unlock(&vcpu->kvm->srcu, vcpu->srcu_idx);
 	if (rc)
 		goto fail;
 

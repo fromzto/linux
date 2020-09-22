@@ -133,10 +133,10 @@ static int pcan_msg_add_rec(struct pcan_usb_pro_msg *pm, int id, ...)
 	switch (id) {
 	case PCAN_USBPRO_TXMSG8:
 		i += 4;
-		/* fall through */
+		fallthrough;
 	case PCAN_USBPRO_TXMSG4:
 		i += 4;
-		/* fall through */
+		fallthrough;
 	case PCAN_USBPRO_TXMSG0:
 		*pc++ = va_arg(ap, int);
 		*pc++ = va_arg(ap, int);
@@ -494,7 +494,7 @@ static int pcan_usb_pro_drv_loaded(struct peak_usb_device *dev, int loaded)
 	u8 *buffer;
 	int err;
 
-	buffer = kmalloc(PCAN_USBPRO_FCT_DRVLD_REQ_LEN, GFP_KERNEL);
+	buffer = kzalloc(PCAN_USBPRO_FCT_DRVLD_REQ_LEN, GFP_KERNEL);
 	if (!buffer)
 		return -ENOMEM;
 

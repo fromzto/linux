@@ -16,6 +16,8 @@
 #include "debug.h"
 #include "channel.h"
 
+static DEFINE_MUTEX(debug_lock);
+
 unsigned int host1x_debug_trace_cmdbuf;
 
 static pid_t host1x_debug_force_timeout_pid;
@@ -52,12 +54,14 @@ static int show_channel(struct host1x_channel *ch, void *data, bool show_fifo)
 	struct output *o = data;
 
 	mutex_lock(&ch->cdma.lock);
+	mutex_lock(&debug_lock);
 
 	if (show_fifo)
 		host1x_hw_show_channel_fifo(m, ch, o);
 
 	host1x_hw_show_channel_cdma(m, ch, o);
 
+	mutex_unlock(&debug_lock);
 	mutex_unlock(&ch->cdma.lock);
 
 	return 0;
@@ -161,9 +165,6 @@ static const struct file_operations host1x_debug_fops = {
 static void host1x_debugfs_init(struct host1x *host1x)
 {
 	struct dentry *de = debugfs_create_dir("tegra-host1x", NULL);
-
-	if (!de)
-		return;
 
 	/* Store the created entry */
 	host1x->debugfs = de;

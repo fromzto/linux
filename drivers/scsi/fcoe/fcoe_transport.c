@@ -308,7 +308,7 @@ EXPORT_SYMBOL_GPL(fcoe_get_wwn);
 u32 fcoe_fc_crc(struct fc_frame *fp)
 {
 	struct sk_buff *skb = fp_skb(fp);
-	struct skb_frag_struct *frag;
+	skb_frag_t *frag;
 	unsigned char *data;
 	unsigned long off, len, clen;
 	u32 crc;
@@ -318,7 +318,7 @@ u32 fcoe_fc_crc(struct fc_frame *fp)
 
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 		frag = &skb_shinfo(skb)->frags[i];
-		off = frag->page_offset;
+		off = skb_frag_off(frag);
 		len = skb_frag_size(frag);
 		while (len > 0) {
 			clen = min(len, PAGE_SIZE - (off & ~PAGE_MASK));
@@ -382,6 +382,7 @@ EXPORT_SYMBOL_GPL(fcoe_clean_pending_queue);
 /**
  * fcoe_check_wait_queue() - Attempt to clear the transmit backlog
  * @lport: The local port whose backlog is to be cleared
+ * @skb: The received FIP packet
  *
  * This empties the wait_queue, dequeues the head of the wait_queue queue
  * and calls fcoe_start_io() for each packet. If all skb have been
@@ -439,7 +440,7 @@ EXPORT_SYMBOL_GPL(fcoe_check_wait_queue);
 
 /**
  * fcoe_queue_timer() - The fcoe queue timer
- * @lport: The local port
+ * @t: Timer context use to obtain the FCoE port
  *
  * Calls fcoe_check_wait_queue on timeout
  */
@@ -672,6 +673,7 @@ static void fcoe_del_netdev_mapping(struct net_device *netdev)
 /**
  * fcoe_netdev_map_lookup - find the fcoe transport that matches the netdev on which
  * it was created
+ * @netdev: The net device that the FCoE interface is on
  *
  * Returns : ptr to the fcoe transport that supports this netdev or NULL
  * if not found.

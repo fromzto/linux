@@ -73,9 +73,6 @@
 #include "bmap.h"
 #include "util.h"
 
-#define IS_LEAF     1 /* Hashed (leaf) directory */
-#define IS_DINODE   2 /* Linear (stuffed dinode block) directory */
-
 #define MAX_RA_BLOCKS 32 /* max read-ahead blocks */
 
 #define gfs2_disk_hash2offset(h) (((u64)(h)) >> 1)
@@ -357,7 +354,7 @@ static __be64 *gfs2_dir_get_hash_table(struct gfs2_inode *ip)
 
 	hc = kmalloc(hsize, GFP_NOFS | __GFP_NOWARN);
 	if (hc == NULL)
-		hc = __vmalloc(hsize, GFP_NOFS, PAGE_KERNEL);
+		hc = __vmalloc(hsize, GFP_NOFS);
 
 	if (hc == NULL)
 		return ERR_PTR(-ENOMEM);
@@ -750,7 +747,7 @@ static struct gfs2_dirent *gfs2_dirent_split_alloc(struct inode *inode,
 	struct gfs2_dirent *dent;
 	dent = gfs2_dirent_scan(inode, bh->b_data, bh->b_size,
 				gfs2_dirent_find_offset, name, ptr);
-	if (!dent || IS_ERR(dent))
+	if (IS_ERR_OR_NULL(dent))
 		return dent;
 	return do_init_dirent(inode, dent, name, bh,
 			      (unsigned)(ptr - (void *)dent));
@@ -854,7 +851,7 @@ static struct gfs2_dirent *gfs2_dirent_search(struct inode *inode,
 		return ERR_PTR(error);
 	dent = gfs2_dirent_scan(inode, bh->b_data, bh->b_size, scan, name, NULL);
 got_dent:
-	if (unlikely(dent == NULL || IS_ERR(dent))) {
+	if (IS_ERR_OR_NULL(dent)) {
 		brelse(bh);
 		bh = NULL;
 	}
@@ -1169,7 +1166,7 @@ static int dir_double_exhash(struct gfs2_inode *dip)
 
 	hc2 = kmalloc_array(hsize_bytes, 2, GFP_NOFS | __GFP_NOWARN);
 	if (hc2 == NULL)
-		hc2 = __vmalloc(hsize_bytes * 2, GFP_NOFS, PAGE_KERNEL);
+		hc2 = __vmalloc(hsize_bytes * 2, GFP_NOFS);
 
 	if (!hc2)
 		return -ENOMEM;
@@ -1330,7 +1327,7 @@ static void *gfs2_alloc_sort_buffer(unsigned size)
 	if (size < KMALLOC_MAX_SIZE)
 		ptr = kmalloc(size, GFP_NOFS | __GFP_NOWARN);
 	if (!ptr)
-		ptr = __vmalloc(size, GFP_NOFS, PAGE_KERNEL);
+		ptr = __vmalloc(size, GFP_NOFS);
 	return ptr;
 }
 
@@ -1463,8 +1460,7 @@ static int gfs2_dir_read_leaf(struct inode *inode, struct dir_context *ctx,
 				sort_offset : entries, copied);
 out_free:
 	for(i = 0; i < leaf; i++)
-		if (larr[i])
-			brelse(larr[i]);
+		brelse(larr[i]);
 	kvfree(larr);
 out:
 	return error;
@@ -1991,8 +1987,7 @@ static int leaf_dealloc(struct gfs2_inode *dip, u32 index, u32 len,
 
 	ht = kzalloc(size, GFP_NOFS | __GFP_NOWARN);
 	if (ht == NULL)
-		ht = __vmalloc(size, GFP_NOFS | __GFP_NOWARN | __GFP_ZERO,
-			       PAGE_KERNEL);
+		ht = __vmalloc(size, GFP_NOFS | __GFP_NOWARN | __GFP_ZERO);
 	if (!ht)
 		return -ENOMEM;
 
@@ -2032,7 +2027,8 @@ static int leaf_dealloc(struct gfs2_inode *dip, u32 index, u32 len,
 
 	error = gfs2_trans_begin(sdp,
 			rg_blocks + (DIV_ROUND_UP(size, sdp->sd_jbsize) + 1) +
-			RES_DINODE + RES_STATFS + RES_QUOTA, l_blocks);
+			RES_DINODE + RES_STATFS + RES_QUOTA, RES_DINODE +
+				 l_blocks);
 	if (error)
 		goto out_rg_gunlock;
 

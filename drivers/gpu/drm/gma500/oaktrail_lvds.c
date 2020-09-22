@@ -9,15 +9,17 @@
  */
 
 #include <linux/i2c.h>
-#include <drm/drmP.h>
+#include <linux/pm_runtime.h>
+
 #include <asm/intel-mid.h>
 
+#include <drm/drm_simple_kms_helper.h>
+
 #include "intel_bios.h"
+#include "power.h"
 #include "psb_drv.h"
 #include "psb_intel_drv.h"
 #include "psb_intel_reg.h"
-#include "power.h"
-#include <linux/pm_runtime.h>
 
 /* The max/min PWM frequency in BPCR[31:17] - */
 /* The smallest number is 1 (not 0) that can fit in the
@@ -117,6 +119,7 @@ static void oaktrail_lvds_mode_set(struct drm_encoder *encoder,
 
 	if (!connector) {
 		DRM_ERROR("Couldn't find connector when setting mode");
+		gma_power_end(dev);
 		return;
 	}
 
@@ -310,8 +313,7 @@ void oaktrail_lvds_init(struct drm_device *dev,
 			   &psb_intel_lvds_connector_funcs,
 			   DRM_MODE_CONNECTOR_LVDS);
 
-	drm_encoder_init(dev, encoder, &psb_intel_lvds_enc_funcs,
-			 DRM_MODE_ENCODER_LVDS, NULL);
+	drm_simple_encoder_init(dev, encoder, DRM_MODE_ENCODER_LVDS);
 
 	gma_connector_attach_encoder(gma_connector, gma_encoder);
 	gma_encoder->type = INTEL_OUTPUT_LVDS;

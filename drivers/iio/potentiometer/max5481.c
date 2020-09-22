@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Maxim Integrated MAX5481-MAX5484 digital potentiometer driver
  * Copyright 2016 Rockwell Collins
  *
  * Datasheet:
- * http://datasheets.maximintegrated.com/en/ds/MAX5481-MAX5484.pdf
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the gnu general public license version 2 as
- * published by the free software foundation.
- *
+ * https://datasheets.maximintegrated.com/en/ds/MAX5481-MAX5484.pdf
  */
 
 #include <linux/acpi.h>
@@ -153,7 +149,6 @@ static int max5481_probe(struct spi_device *spi)
 		data->cfg = &max5481_cfg[id->driver_data];
 
 	indio_dev->name = id->name;
-	indio_dev->dev.parent = &spi->dev;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
 	/* variant specific configuration */

@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Realtek USB SD/MMC Card Interface driver
  *
  * Copyright(c) 2009-2013 Realtek Semiconductor Corp. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  * Author:
  *   Roger Tseng <rogerable@realtek.com>
@@ -665,12 +654,11 @@ static u8 sd_search_final_phase(struct rtsx_usb_sdmmc *host, u32 phase_map)
 
 static void sd_wait_data_idle(struct rtsx_usb_sdmmc *host)
 {
-	int err, i;
+	int i;
 	u8 val = 0;
 
 	for (i = 0; i < 100; i++) {
-		err = rtsx_usb_ep0_read_register(host->ucr,
-				SD_DATA_STATE, &val);
+		rtsx_usb_ep0_read_register(host->ucr, SD_DATA_STATE, &val);
 		if (val & SD_DATA_IDLE)
 			return;
 
@@ -1325,7 +1313,7 @@ static void rtsx_usb_init_host(struct rtsx_usb_sdmmc *host)
 	mmc->caps = MMC_CAP_4_BIT_DATA | MMC_CAP_SD_HIGHSPEED |
 		MMC_CAP_MMC_HIGHSPEED | MMC_CAP_BUS_WIDTH_TEST |
 		MMC_CAP_UHS_SDR12 | MMC_CAP_UHS_SDR25 | MMC_CAP_UHS_SDR50 |
-		MMC_CAP_ERASE | MMC_CAP_SYNC_RUNTIME_PM;
+		MMC_CAP_SYNC_RUNTIME_PM;
 	mmc->caps2 = MMC_CAP2_NO_PRESCAN_POWERUP | MMC_CAP2_FULL_PWR_CYCLE |
 		MMC_CAP2_NO_SDIO;
 

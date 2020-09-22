@@ -1,21 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ti-dac5571.c - Texas Instruments 8/10/12-bit 1/4-channel DAC driver
  *
  * Copyright (C) 2018 Prevas A/S
  *
- * http://www.ti.com/lit/ds/symlink/dac5571.pdf
- * http://www.ti.com/lit/ds/symlink/dac6571.pdf
- * http://www.ti.com/lit/ds/symlink/dac7571.pdf
- * http://www.ti.com/lit/ds/symlink/dac5574.pdf
- * http://www.ti.com/lit/ds/symlink/dac6574.pdf
- * http://www.ti.com/lit/ds/symlink/dac7574.pdf
- * http://www.ti.com/lit/ds/symlink/dac5573.pdf
- * http://www.ti.com/lit/ds/symlink/dac6573.pdf
- * http://www.ti.com/lit/ds/symlink/dac7573.pdf
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License (version 2) as
- * published by the Free Software Foundation.
+ * https://www.ti.com/lit/ds/symlink/dac5571.pdf
+ * https://www.ti.com/lit/ds/symlink/dac6571.pdf
+ * https://www.ti.com/lit/ds/symlink/dac7571.pdf
+ * https://www.ti.com/lit/ds/symlink/dac5574.pdf
+ * https://www.ti.com/lit/ds/symlink/dac6574.pdf
+ * https://www.ti.com/lit/ds/symlink/dac7574.pdf
+ * https://www.ti.com/lit/ds/symlink/dac5573.pdf
+ * https://www.ti.com/lit/ds/symlink/dac6573.pdf
+ * https://www.ti.com/lit/ds/symlink/dac7573.pdf
  */
 
 #include <linux/iio/iio.h>
@@ -324,8 +321,6 @@ static int dac5571_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, indio_dev);
 	data->client = client;
 
-	indio_dev->dev.parent = dev;
-	indio_dev->dev.of_node = client->dev.of_node;
 	indio_dev->info = &dac5571_info;
 	indio_dev->name = id->name;
 	indio_dev->modes = INDIO_DIRECT_MODE;

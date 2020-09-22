@@ -40,7 +40,7 @@
 #include <linux/ctype.h>
 #include <linux/delay.h>
 #include <linux/err.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/i2c.h>
 #include <linux/leds.h>
 #include <linux/module.h>
@@ -429,7 +429,7 @@ static int pca955x_probe(struct i2c_client *client,
 	int ngpios = 0;
 
 	chip = &pca955x_chipdefs[id->driver_data];
-	adapter = to_i2c_adapter(client->dev.parent);
+	adapter = client->adapter;
 	pdata = dev_get_platdata(&client->dev);
 	if (!pdata) {
 		pdata =	pca955x_get_pdata(client, chip);

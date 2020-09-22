@@ -86,9 +86,9 @@ int __kprobes arch_prepare_kprobe(struct kprobe *p)
 		goto out;
 	}
 
-	if ((probe_kernel_read(&prev_insn, p->addr - 1,
-				sizeof(mips_instruction)) == 0) &&
-				insn_has_delayslot(prev_insn)) {
+	if (copy_from_kernel_nofault(&prev_insn, p->addr - 1,
+			sizeof(mips_instruction)) == 0 &&
+	    insn_has_delayslot(prev_insn)) {
 		pr_notice("Kprobes for branch delayslot are not supported\n");
 		ret = -EINVAL;
 		goto out;
@@ -220,7 +220,7 @@ static int evaluate_branch_instruction(struct kprobe *p, struct pt_regs *regs,
 
 unaligned:
 	pr_notice("%s: unaligned epc - sending SIGBUS.\n", current->comm);
-	force_sig(SIGBUS, current);
+	force_sig(SIGBUS);
 	return -EFAULT;
 
 }
@@ -398,7 +398,7 @@ out:
 	return 1;
 }
 
-static inline int kprobe_fault_handler(struct pt_regs *regs, int trapnr)
+int kprobe_fault_handler(struct pt_regs *regs, int trapnr)
 {
 	struct kprobe *cur = kprobe_running();
 	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();

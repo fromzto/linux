@@ -7,6 +7,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/blk-mq.h>
+#include <linux/list_sort.h>
 
 #include <trace/events/block.h>
 
@@ -77,19 +78,71 @@ void blk_mq_sched_restart(struct blk_mq_hw_ctx *hctx)
 		return;
 	clear_bit(BLK_MQ_S_SCHED_RESTART, &hctx->state);
 
+	/*
+	 * Order clearing SCHED_RESTART and list_empty_careful(&hctx->dispatch)
+	 * in blk_mq_run_hw_queue(). Its pair is the barrier in
+	 * blk_mq_dispatch_rq_list(). So dispatch code won't see SCHED_RESTART,
+	 * meantime new request added to hctx->dispatch is missed to check in
+	 * blk_mq_run_hw_queue().
+	 */
+	smp_mb();
+
 	blk_mq_run_hw_queue(hctx, true);
 }
+
+static int sched_rq_cmp(void *priv, struct list_head *a, struct list_head *b)
+{
+	struct request *rqa = container_of(a, struct request, queuelist);
+	struct request *rqb = container_of(b, struct request, queuelist);
+
+	return rqa->mq_hctx > rqb->mq_hctx;
+}
+
+static bool blk_mq_dispatch_hctx_list(struct list_head *rq_list)
+{
+	struct blk_mq_hw_ctx *hctx =
+		list_first_entry(rq_list, struct request, queuelist)->mq_hctx;
+	struct request *rq;
+	LIST_HEAD(hctx_list);
+	unsigned int count = 0;
+
+	list_for_each_entry(rq, rq_list, queuelist) {
+		if (rq->mq_hctx != hctx) {
+			list_cut_before(&hctx_list, rq_list, &rq->queuelist);
+			goto dispatch;
+		}
+		count++;
+	}
+	list_splice_tail_init(rq_list, &hctx_list);
+
+dispatch:
+	return blk_mq_dispatch_rq_list(hctx, &hctx_list, count);
+}
+
+#define BLK_MQ_BUDGET_DELAY	3		/* ms units */
 
 /*
  * Only SCSI implements .get_budget and .put_budget, and SCSI restarts
  * its queue by itself in its completion handler, so we don't need to
  * restart queue if .get_budget() returns BLK_STS_NO_RESOURCE.
+ *
+ * Returns -EAGAIN if hctx->dispatch was found non-empty and run_work has to
+ * be run again.  This is necessary to avoid starving flushes.
  */
-static void blk_mq_do_dispatch_sched(struct blk_mq_hw_ctx *hctx)
+static int __blk_mq_do_dispatch_sched(struct blk_mq_hw_ctx *hctx)
 {
 	struct request_queue *q = hctx->queue;
 	struct elevator_queue *e = q->elevator;
+	bool multi_hctxs = false, run_queue = false;
+	bool dispatched = false, busy = false;
+	unsigned int max_dispatch;
 	LIST_HEAD(rq_list);
+	int count = 0;
+
+	if (hctx->dispatch_busy)
+		max_dispatch = 1;
+	else
+		max_dispatch = hctx->queue->nr_requests;
 
 	do {
 		struct request *rq;
@@ -97,12 +150,25 @@ static void blk_mq_do_dispatch_sched(struct blk_mq_hw_ctx *hctx)
 		if (e->type->ops.has_work && !e->type->ops.has_work(hctx))
 			break;
 
-		if (!blk_mq_get_dispatch_budget(hctx))
+		if (!list_empty_careful(&hctx->dispatch)) {
+			busy = true;
+			break;
+		}
+
+		if (!blk_mq_get_dispatch_budget(q))
 			break;
 
 		rq = e->type->ops.dispatch_request(hctx);
 		if (!rq) {
-			blk_mq_put_dispatch_budget(hctx);
+			blk_mq_put_dispatch_budget(q);
+			/*
+			 * We're releasing without dispatching. Holding the
+			 * budget could have blocked any "hctx"s with the
+			 * same queue and if we didn't dispatch then there's
+			 * no guarantee anyone will kick the queue.  Kick it
+			 * ourselves.
+			 */
+			run_queue = true;
 			break;
 		}
 
@@ -111,8 +177,44 @@ static void blk_mq_do_dispatch_sched(struct blk_mq_hw_ctx *hctx)
 		 * if this rq won't be queued to driver via .queue_rq()
 		 * in blk_mq_dispatch_rq_list().
 		 */
-		list_add(&rq->queuelist, &rq_list);
-	} while (blk_mq_dispatch_rq_list(q, &rq_list, true));
+		list_add_tail(&rq->queuelist, &rq_list);
+		if (rq->mq_hctx != hctx)
+			multi_hctxs = true;
+	} while (++count < max_dispatch);
+
+	if (!count) {
+		if (run_queue)
+			blk_mq_delay_run_hw_queues(q, BLK_MQ_BUDGET_DELAY);
+	} else if (multi_hctxs) {
+		/*
+		 * Requests from different hctx may be dequeued from some
+		 * schedulers, such as bfq and deadline.
+		 *
+		 * Sort the requests in the list according to their hctx,
+		 * dispatch batching requests from same hctx at a time.
+		 */
+		list_sort(NULL, &rq_list, sched_rq_cmp);
+		do {
+			dispatched |= blk_mq_dispatch_hctx_list(&rq_list);
+		} while (!list_empty(&rq_list));
+	} else {
+		dispatched = blk_mq_dispatch_rq_list(hctx, &rq_list, count);
+	}
+
+	if (busy)
+		return -EAGAIN;
+	return !!dispatched;
+}
+
+static int blk_mq_do_dispatch_sched(struct blk_mq_hw_ctx *hctx)
+{
+	int ret;
+
+	do {
+		ret = __blk_mq_do_dispatch_sched(hctx);
+	} while (ret == 1);
+
+	return ret;
 }
 
 static struct blk_mq_ctx *blk_mq_next_ctx(struct blk_mq_hw_ctx *hctx,
@@ -130,25 +232,41 @@ static struct blk_mq_ctx *blk_mq_next_ctx(struct blk_mq_hw_ctx *hctx,
  * Only SCSI implements .get_budget and .put_budget, and SCSI restarts
  * its queue by itself in its completion handler, so we don't need to
  * restart queue if .get_budget() returns BLK_STS_NO_RESOURCE.
+ *
+ * Returns -EAGAIN if hctx->dispatch was found non-empty and run_work has to
+ * be run again.  This is necessary to avoid starving flushes.
  */
-static void blk_mq_do_dispatch_ctx(struct blk_mq_hw_ctx *hctx)
+static int blk_mq_do_dispatch_ctx(struct blk_mq_hw_ctx *hctx)
 {
 	struct request_queue *q = hctx->queue;
 	LIST_HEAD(rq_list);
 	struct blk_mq_ctx *ctx = READ_ONCE(hctx->dispatch_from);
+	int ret = 0;
+	struct request *rq;
 
 	do {
-		struct request *rq;
+		if (!list_empty_careful(&hctx->dispatch)) {
+			ret = -EAGAIN;
+			break;
+		}
 
 		if (!sbitmap_any_bit_set(&hctx->ctx_map))
 			break;
 
-		if (!blk_mq_get_dispatch_budget(hctx))
+		if (!blk_mq_get_dispatch_budget(q))
 			break;
 
 		rq = blk_mq_dequeue_from_ctx(hctx, ctx);
 		if (!rq) {
-			blk_mq_put_dispatch_budget(hctx);
+			blk_mq_put_dispatch_budget(q);
+			/*
+			 * We're releasing without dispatching. Holding the
+			 * budget could have blocked any "hctx"s with the
+			 * same queue and if we didn't dispatch then there's
+			 * no guarantee anyone will kick the queue.  Kick it
+			 * ourselves.
+			 */
+			blk_mq_delay_run_hw_queues(q, BLK_MQ_BUDGET_DELAY);
 			break;
 		}
 
@@ -162,23 +280,19 @@ static void blk_mq_do_dispatch_ctx(struct blk_mq_hw_ctx *hctx)
 		/* round robin for fair dispatch */
 		ctx = blk_mq_next_ctx(hctx, rq->mq_ctx);
 
-	} while (blk_mq_dispatch_rq_list(q, &rq_list, true));
+	} while (blk_mq_dispatch_rq_list(rq->mq_hctx, &rq_list, 1));
 
 	WRITE_ONCE(hctx->dispatch_from, ctx);
+	return ret;
 }
 
-void blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
+static int __blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
 {
 	struct request_queue *q = hctx->queue;
 	struct elevator_queue *e = q->elevator;
 	const bool has_sched_dispatch = e && e->type->ops.dispatch_request;
+	int ret = 0;
 	LIST_HEAD(rq_list);
-
-	/* RCU or SRCU read lock is needed before checking quiesced flag */
-	if (unlikely(blk_mq_hctx_stopped(hctx) || blk_queue_quiesced(q)))
-		return;
-
-	hctx->run++;
 
 	/*
 	 * If we have previous entries on our dispatch list, grab them first for
@@ -206,25 +320,47 @@ void blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
 	 */
 	if (!list_empty(&rq_list)) {
 		blk_mq_sched_mark_restart_hctx(hctx);
-		if (blk_mq_dispatch_rq_list(q, &rq_list, false)) {
+		if (blk_mq_dispatch_rq_list(hctx, &rq_list, 0)) {
 			if (has_sched_dispatch)
-				blk_mq_do_dispatch_sched(hctx);
+				ret = blk_mq_do_dispatch_sched(hctx);
 			else
-				blk_mq_do_dispatch_ctx(hctx);
+				ret = blk_mq_do_dispatch_ctx(hctx);
 		}
 	} else if (has_sched_dispatch) {
-		blk_mq_do_dispatch_sched(hctx);
+		ret = blk_mq_do_dispatch_sched(hctx);
 	} else if (hctx->dispatch_busy) {
 		/* dequeue request one by one from sw queue if queue is busy */
-		blk_mq_do_dispatch_ctx(hctx);
+		ret = blk_mq_do_dispatch_ctx(hctx);
 	} else {
 		blk_mq_flush_busy_ctxs(hctx, &rq_list);
-		blk_mq_dispatch_rq_list(q, &rq_list, false);
+		blk_mq_dispatch_rq_list(hctx, &rq_list, 0);
+	}
+
+	return ret;
+}
+
+void blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
+{
+	struct request_queue *q = hctx->queue;
+
+	/* RCU or SRCU read lock is needed before checking quiesced flag */
+	if (unlikely(blk_mq_hctx_stopped(hctx) || blk_queue_quiesced(q)))
+		return;
+
+	hctx->run++;
+
+	/*
+	 * A return of -EAGAIN is an indication that hctx->dispatch is not
+	 * empty and we must run again in order to avoid starving flushes.
+	 */
+	if (__blk_mq_sched_dispatch_requests(hctx) == -EAGAIN) {
+		if (__blk_mq_sched_dispatch_requests(hctx) == -EAGAIN)
+			blk_mq_run_hw_queue(hctx, true);
 	}
 }
 
 bool blk_mq_sched_try_merge(struct request_queue *q, struct bio *bio,
-			    struct request **merged_request)
+		unsigned int nr_segs, struct request **merged_request)
 {
 	struct request *rq;
 
@@ -232,7 +368,7 @@ bool blk_mq_sched_try_merge(struct request_queue *q, struct bio *bio,
 	case ELEVATOR_BACK_MERGE:
 		if (!blk_mq_sched_allow_merge(q, rq, bio))
 			return false;
-		if (!bio_attempt_back_merge(q, rq, bio))
+		if (!bio_attempt_back_merge(rq, bio, nr_segs))
 			return false;
 		*merged_request = attempt_back_merge(q, rq);
 		if (!*merged_request)
@@ -241,7 +377,7 @@ bool blk_mq_sched_try_merge(struct request_queue *q, struct bio *bio,
 	case ELEVATOR_FRONT_MERGE:
 		if (!blk_mq_sched_allow_merge(q, rq, bio))
 			return false;
-		if (!bio_attempt_front_merge(q, rq, bio))
+		if (!bio_attempt_front_merge(rq, bio, nr_segs))
 			return false;
 		*merged_request = attempt_front_merge(q, rq);
 		if (!*merged_request)
@@ -260,7 +396,7 @@ EXPORT_SYMBOL_GPL(blk_mq_sched_try_merge);
  * of them.
  */
 bool blk_mq_bio_list_merge(struct request_queue *q, struct list_head *list,
-			   struct bio *bio)
+			   struct bio *bio, unsigned int nr_segs)
 {
 	struct request *rq;
 	int checked = 8;
@@ -277,11 +413,13 @@ bool blk_mq_bio_list_merge(struct request_queue *q, struct list_head *list,
 		switch (blk_try_merge(rq, bio)) {
 		case ELEVATOR_BACK_MERGE:
 			if (blk_mq_sched_allow_merge(q, rq, bio))
-				merged = bio_attempt_back_merge(q, rq, bio);
+				merged = bio_attempt_back_merge(rq, bio,
+						nr_segs);
 			break;
 		case ELEVATOR_FRONT_MERGE:
 			if (blk_mq_sched_allow_merge(q, rq, bio))
-				merged = bio_attempt_front_merge(q, rq, bio);
+				merged = bio_attempt_front_merge(rq, bio,
+						nr_segs);
 			break;
 		case ELEVATOR_DISCARD_MERGE:
 			merged = bio_attempt_discard_merge(q, rq, bio);
@@ -304,13 +442,14 @@ EXPORT_SYMBOL_GPL(blk_mq_bio_list_merge);
  */
 static bool blk_mq_attempt_merge(struct request_queue *q,
 				 struct blk_mq_hw_ctx *hctx,
-				 struct blk_mq_ctx *ctx, struct bio *bio)
+				 struct blk_mq_ctx *ctx, struct bio *bio,
+				 unsigned int nr_segs)
 {
 	enum hctx_type type = hctx->type;
 
 	lockdep_assert_held(&ctx->lock);
 
-	if (blk_mq_bio_list_merge(q, &ctx->rq_lists[type], bio)) {
+	if (blk_mq_bio_list_merge(q, &ctx->rq_lists[type], bio, nr_segs)) {
 		ctx->rq_merged++;
 		return true;
 	}
@@ -318,7 +457,8 @@ static bool blk_mq_attempt_merge(struct request_queue *q,
 	return false;
 }
 
-bool __blk_mq_sched_bio_merge(struct request_queue *q, struct bio *bio)
+bool __blk_mq_sched_bio_merge(struct request_queue *q, struct bio *bio,
+		unsigned int nr_segs)
 {
 	struct elevator_queue *e = q->elevator;
 	struct blk_mq_ctx *ctx = blk_mq_get_ctx(q);
@@ -326,21 +466,18 @@ bool __blk_mq_sched_bio_merge(struct request_queue *q, struct bio *bio)
 	bool ret = false;
 	enum hctx_type type;
 
-	if (e && e->type->ops.bio_merge) {
-		blk_mq_put_ctx(ctx);
-		return e->type->ops.bio_merge(hctx, bio);
-	}
+	if (e && e->type->ops.bio_merge)
+		return e->type->ops.bio_merge(hctx, bio, nr_segs);
 
 	type = hctx->type;
 	if ((hctx->flags & BLK_MQ_F_SHOULD_MERGE) &&
 			!list_empty_careful(&ctx->rq_lists[type])) {
 		/* default per sw-queue merge */
 		spin_lock(&ctx->lock);
-		ret = blk_mq_attempt_merge(q, hctx, ctx, bio);
+		ret = blk_mq_attempt_merge(q, hctx, ctx, bio, nr_segs);
 		spin_unlock(&ctx->lock);
 	}
 
-	blk_mq_put_ctx(ctx);
 	return ret;
 }
 
@@ -360,13 +497,19 @@ static bool blk_mq_sched_bypass_insert(struct blk_mq_hw_ctx *hctx,
 				       bool has_sched,
 				       struct request *rq)
 {
-	/* dispatch flush rq directly */
-	if (rq->rq_flags & RQF_FLUSH_SEQ) {
-		spin_lock(&hctx->lock);
-		list_add(&rq->queuelist, &hctx->dispatch);
-		spin_unlock(&hctx->lock);
+	/*
+	 * dispatch flush and passthrough rq directly
+	 *
+	 * passthrough request has to be added to hctx->dispatch directly.
+	 * For some reason, device may be in one situation which can't
+	 * handle FS request, so STS_RESOURCE is always returned and the
+	 * FS request will be added to hctx->dispatch. However passthrough
+	 * request may be required at that time for fixing the problem. If
+	 * passthrough request is added to scheduler queue, there isn't any
+	 * chance to dispatch it given we prioritize requests in hctx->dispatch.
+	 */
+	if ((rq->rq_flags & RQF_FLUSH_SEQ) || blk_rq_is_passthrough(rq))
 		return true;
-	}
 
 	if (has_sched)
 		rq->rq_flags |= RQF_SORTED;
@@ -390,8 +533,32 @@ void blk_mq_sched_insert_request(struct request *rq, bool at_head,
 
 	WARN_ON(e && (rq->tag != -1));
 
-	if (blk_mq_sched_bypass_insert(hctx, !!e, rq))
+	if (blk_mq_sched_bypass_insert(hctx, !!e, rq)) {
+		/*
+		 * Firstly normal IO request is inserted to scheduler queue or
+		 * sw queue, meantime we add flush request to dispatch queue(
+		 * hctx->dispatch) directly and there is at most one in-flight
+		 * flush request for each hw queue, so it doesn't matter to add
+		 * flush request to tail or front of the dispatch queue.
+		 *
+		 * Secondly in case of NCQ, flush request belongs to non-NCQ
+		 * command, and queueing it will fail when there is any
+		 * in-flight normal IO request(NCQ command). When adding flush
+		 * rq to the front of hctx->dispatch, it is easier to introduce
+		 * extra time to flush rq's latency because of S_SCHED_RESTART
+		 * compared with adding to the tail of dispatch queue, then
+		 * chance of flush merge is increased, and less flush requests
+		 * will be issued to controller. It is observed that ~10% time
+		 * is saved in blktests block/004 on disk attached to AHCI/NCQ
+		 * drive when adding flush rq to the front of hctx->dispatch.
+		 *
+		 * Simply queue flush rq to the front of hctx->dispatch so that
+		 * intensive flush workloads can benefit in case of NCQ HW.
+		 */
+		at_head = (rq->rq_flags & RQF_FLUSH_SEQ) ? true : at_head;
+		blk_mq_request_bypass_insert(rq, at_head, false);
 		goto run;
+	}
 
 	if (e && e->type->ops.insert_requests) {
 		LIST_HEAD(list);
@@ -553,9 +720,6 @@ void blk_mq_sched_free_requests(struct request_queue *q)
 {
 	struct blk_mq_hw_ctx *hctx;
 	int i;
-
-	lockdep_assert_held(&q->sysfs_lock);
-	WARN_ON(!q->elevator);
 
 	queue_for_each_hw_ctx(q, hctx, i) {
 		if (hctx->sched_tags)

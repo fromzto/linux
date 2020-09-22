@@ -1,19 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ad2s1200.c simple support for the ADI Resolver to Digital Converters:
  * AD2S1200/1205
  *
  * Copyright (c) 2018-2018 David Veenstra <davidjulianveenstra@gmail.com>
  * Copyright (c) 2010-2010 Analog Devices Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/bitops.h>
 #include <linux/delay.h>
 #include <linux/device.h>
-#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -161,7 +157,6 @@ static int ad2s1200_probe(struct spi_device *spi)
 		return PTR_ERR(st->rdvel);
 	}
 
-	indio_dev->dev.parent = &spi->dev;
 	indio_dev->info = &ad2s1200_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = ad2s1200_channels;

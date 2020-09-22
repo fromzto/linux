@@ -8,11 +8,11 @@
 #include "syscalltbl.h"
 #include <stdlib.h>
 #include <linux/compiler.h>
+#include <linux/zalloc.h>
 
 #ifdef HAVE_SYSCALL_TABLE_SUPPORT
 #include <string.h>
 #include "string2.h"
-#include "util.h"
 
 #if defined(__x86_64__)
 #include <asm/syscalls_64.c>
@@ -79,6 +79,7 @@ static int syscalltbl__init_native(struct syscalltbl *tbl)
 
 	qsort(tbl->syscalls.entries, nr_entries, sizeof(struct syscall), syscallcmp);
 	tbl->syscalls.nr_entries = nr_entries;
+	tbl->syscalls.max_id	 = syscalltbl_native_max_id;
 	return 0;
 }
 
@@ -141,7 +142,7 @@ int syscalltbl__strglobmatch_first(struct syscalltbl *tbl, const char *syscall_g
 
 struct syscalltbl *syscalltbl__new(void)
 {
-	struct syscalltbl *tbl = malloc(sizeof(*tbl));
+	struct syscalltbl *tbl = zalloc(sizeof(*tbl));
 	if (tbl)
 		tbl->audit_machine = audit_detect_machine();
 	return tbl;

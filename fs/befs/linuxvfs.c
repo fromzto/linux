@@ -22,6 +22,7 @@
 #include <linux/cred.h>
 #include <linux/exportfs.h>
 #include <linux/seq_file.h>
+#include <linux/blkdev.h>
 
 #include "befs.h"
 #include "btree.h"
@@ -893,6 +894,8 @@ befs_fill_super(struct super_block *sb, void *data, int silent)
 	sb_set_blocksize(sb, (ulong) befs_sb->block_size);
 	sb->s_op = &befs_sops;
 	sb->s_export_op = &befs_export_operations;
+	sb->s_time_min = 0;
+	sb->s_time_max = 0xffffffffffffll;
 	root = befs_iget(sb, iaddr2blockno(sb, &(befs_sb->root_dir)));
 	if (IS_ERR(root)) {
 		ret = PTR_ERR(root);

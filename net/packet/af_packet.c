@@ -384,7 +384,7 @@ static void __packet_set_status(struct packet_sock *po, void *frame, int status)
 	smp_wmb();
 }
 
-static int __packet_get_status(struct packet_sock *po, void *frame)
+static int __packet_get_status(const struct packet_sock *po, void *frame)
 {
 	union tpacket_uhdr h;
 
@@ -408,17 +408,17 @@ static int __packet_get_status(struct packet_sock *po, void *frame)
 	}
 }
 
-static __u32 tpacket_get_timestamp(struct sk_buff *skb, struct timespec *ts,
+static __u32 tpacket_get_timestamp(struct sk_buff *skb, struct timespec64 *ts,
 				   unsigned int flags)
 {
 	struct skb_shared_hwtstamps *shhwtstamps = skb_hwtstamps(skb);
 
 	if (shhwtstamps &&
 	    (flags & SOF_TIMESTAMPING_RAW_HARDWARE) &&
-	    ktime_to_timespec_cond(shhwtstamps->hwtstamp, ts))
+	    ktime_to_timespec64_cond(shhwtstamps->hwtstamp, ts))
 		return TP_STATUS_TS_RAW_HARDWARE;
 
-	if (ktime_to_timespec_cond(skb->tstamp, ts))
+	if (ktime_to_timespec64_cond(skb->tstamp, ts))
 		return TP_STATUS_TS_SOFTWARE;
 
 	return 0;
@@ -428,13 +428,20 @@ static __u32 __packet_set_timestamp(struct packet_sock *po, void *frame,
 				    struct sk_buff *skb)
 {
 	union tpacket_uhdr h;
-	struct timespec ts;
+	struct timespec64 ts;
 	__u32 ts_status;
 
 	if (!(ts_status = tpacket_get_timestamp(skb, &ts, po->tp_tstamp)))
 		return 0;
 
 	h.raw = frame;
+	/*
+	 * versions 1 through 3 overflow the timestamps in y2106, since they
+	 * all store the seconds in a 32-bit unsigned integer.
+	 * If we create a version 4, that should have a 64-bit timestamp,
+	 * either 64-bit seconds + 32-bit nanoseconds, or just 64-bit
+	 * nanoseconds.
+	 */
 	switch (po->tp_version) {
 	case TPACKET_V1:
 		h.h1->tp_sec = ts.tv_sec;
@@ -460,10 +467,10 @@ static __u32 __packet_set_timestamp(struct packet_sock *po, void *frame,
 	return ts_status;
 }
 
-static void *packet_lookup_frame(struct packet_sock *po,
-		struct packet_ring_buffer *rb,
-		unsigned int position,
-		int status)
+static void *packet_lookup_frame(const struct packet_sock *po,
+				 const struct packet_ring_buffer *rb,
+				 unsigned int position,
+				 int status)
 {
 	unsigned int pg_vec_pos, frame_offset;
 	union tpacket_uhdr h;
@@ -520,7 +527,7 @@ static int prb_calc_retire_blk_tmo(struct packet_sock *po,
 				int blk_size_in_bytes)
 {
 	struct net_device *dev;
-	unsigned int mbits = 0, msec = 0, div = 0, tmo = 0;
+	unsigned int mbits, div;
 	struct ethtool_link_ksettings ecmd;
 	int err;
 
@@ -532,30 +539,25 @@ static int prb_calc_retire_blk_tmo(struct packet_sock *po,
 	}
 	err = __ethtool_get_link_ksettings(dev, &ecmd);
 	rtnl_unlock();
-	if (!err) {
-		/*
-		 * If the link speed is so slow you don't really
-		 * need to worry about perf anyways
-		 */
-		if (ecmd.base.speed < SPEED_1000 ||
-		    ecmd.base.speed == SPEED_UNKNOWN) {
-			return DEFAULT_PRB_RETIRE_TOV;
-		} else {
-			msec = 1;
-			div = ecmd.base.speed / 1000;
-		}
-	}
+	if (err)
+		return DEFAULT_PRB_RETIRE_TOV;
 
+	/* If the link speed is so slow you don't really
+	 * need to worry about perf anyways
+	 */
+	if (ecmd.base.speed < SPEED_1000 ||
+	    ecmd.base.speed == SPEED_UNKNOWN)
+		return DEFAULT_PRB_RETIRE_TOV;
+
+	div = ecmd.base.speed / 1000;
 	mbits = (blk_size_in_bytes * 8) / (1024 * 1024);
 
 	if (div)
 		mbits /= div;
 
-	tmo = mbits * msec;
-
 	if (div)
-		return tmo+1;
-	return tmo;
+		return mbits + 1;
+	return mbits;
 }
 
 static void prb_init_ft_ops(struct tpacket_kbdq_core *p1,
@@ -591,6 +593,7 @@ static void init_prb_bdqc(struct packet_sock *po,
 						req_u->req3.tp_block_size);
 	p1->tov_in_jiffies = msecs_to_jiffies(p1->retire_blk_tov);
 	p1->blk_sizeof_priv = req_u->req3.tp_sizeof_priv;
+	rwlock_init(&p1->blk_fill_in_prog_lock);
 
 	p1->max_frame_len = p1->kblk_size - BLK_PLUS_PRIV(p1->blk_sizeof_priv);
 	prb_init_ft_ops(p1, req_u);
@@ -657,10 +660,9 @@ static void prb_retire_rx_blk_timer_expired(struct timer_list *t)
 	 *
 	 */
 	if (BLOCK_NUM_PKTS(pbd)) {
-		while (atomic_read(&pkc->blk_fill_in_prog)) {
-			/* Waiting for skb_copy_bits to finish... */
-			cpu_relax();
-		}
+		/* Waiting for skb_copy_bits to finish... */
+		write_lock(&pkc->blk_fill_in_prog_lock);
+		write_unlock(&pkc->blk_fill_in_prog_lock);
 	}
 
 	if (pkc->last_kactive_blk_num == pkc->kactive_blk_num) {
@@ -758,7 +760,7 @@ static void prb_close_block(struct tpacket_kbdq_core *pkc1,
 	struct tpacket_hdr_v1 *h1 = &pbd1->hdr.bh1;
 	struct sock *sk = &po->sk;
 
-	if (po->stats.stats3.tp_drops)
+	if (atomic_read(&po->tp_drops))
 		status |= TP_STATUS_LOSING;
 
 	last_pkt = (struct tpacket3_hdr *)pkc1->prev;
@@ -774,8 +776,8 @@ static void prb_close_block(struct tpacket_kbdq_core *pkc1,
 		 * It shouldn't really happen as we don't close empty
 		 * blocks. See prb_retire_rx_blk_timer_expired().
 		 */
-		struct timespec ts;
-		getnstimeofday(&ts);
+		struct timespec64 ts;
+		ktime_get_real_ts64(&ts);
 		h1->ts_last_pkt.ts_sec = ts.tv_sec;
 		h1->ts_last_pkt.ts_nsec	= ts.tv_nsec;
 	}
@@ -805,7 +807,7 @@ static void prb_thaw_queue(struct tpacket_kbdq_core *pkc)
 static void prb_open_block(struct tpacket_kbdq_core *pkc1,
 	struct tpacket_block_desc *pbd1)
 {
-	struct timespec ts;
+	struct timespec64 ts;
 	struct tpacket_hdr_v1 *h1 = &pbd1->hdr.bh1;
 
 	smp_rmb();
@@ -818,7 +820,7 @@ static void prb_open_block(struct tpacket_kbdq_core *pkc1,
 	BLOCK_NUM_PKTS(pbd1) = 0;
 	BLOCK_LEN(pbd1) = BLK_PLUS_PRIV(pkc1->blk_sizeof_priv);
 
-	getnstimeofday(&ts);
+	ktime_get_real_ts64(&ts);
 
 	h1->ts_first_pkt.ts_sec = ts.tv_sec;
 	h1->ts_first_pkt.ts_nsec = ts.tv_nsec;
@@ -919,10 +921,9 @@ static void prb_retire_current_block(struct tpacket_kbdq_core *pkc,
 		 * the timer-handler already handled this case.
 		 */
 		if (!(status & TP_STATUS_BLK_TMO)) {
-			while (atomic_read(&pkc->blk_fill_in_prog)) {
-				/* Waiting for skb_copy_bits to finish... */
-				cpu_relax();
-			}
+			/* Waiting for skb_copy_bits to finish... */
+			write_lock(&pkc->blk_fill_in_prog_lock);
+			write_unlock(&pkc->blk_fill_in_prog_lock);
 		}
 		prb_close_block(pkc, pbd, po, status);
 		return;
@@ -940,9 +941,11 @@ static int prb_queue_frozen(struct tpacket_kbdq_core *pkc)
 }
 
 static void prb_clear_blk_fill_status(struct packet_ring_buffer *rb)
+	__releases(&pkc->blk_fill_in_prog_lock)
 {
 	struct tpacket_kbdq_core *pkc  = GET_PBDQC_FROM_RB(rb);
-	atomic_dec(&pkc->blk_fill_in_prog);
+
+	read_unlock(&pkc->blk_fill_in_prog_lock);
 }
 
 static void prb_fill_rxhash(struct tpacket_kbdq_core *pkc,
@@ -987,6 +990,7 @@ static void prb_fill_curr_block(char *curr,
 				struct tpacket_kbdq_core *pkc,
 				struct tpacket_block_desc *pbd,
 				unsigned int len)
+	__acquires(&pkc->blk_fill_in_prog_lock)
 {
 	struct tpacket3_hdr *ppd;
 
@@ -996,14 +1000,13 @@ static void prb_fill_curr_block(char *curr,
 	pkc->nxt_offset += TOTAL_PKT_LEN_INCL_ALIGN(len);
 	BLOCK_LEN(pbd) += TOTAL_PKT_LEN_INCL_ALIGN(len);
 	BLOCK_NUM_PKTS(pbd) += 1;
-	atomic_inc(&pkc->blk_fill_in_prog);
+	read_lock(&pkc->blk_fill_in_prog_lock);
 	prb_run_all_ft_ops(pkc, ppd);
 }
 
 /* Assumes caller has the sk->rx_queue.lock */
 static void *__packet_lookup_frame_in_block(struct packet_sock *po,
 					    struct sk_buff *skb,
-						int status,
 					    unsigned int len
 					    )
 {
@@ -1075,7 +1078,7 @@ static void *packet_current_rx_frame(struct packet_sock *po,
 					po->rx_ring.head, status);
 		return curr;
 	case TPACKET_V3:
-		return __packet_lookup_frame_in_block(po, skb, status, len);
+		return __packet_lookup_frame_in_block(po, skb, len);
 	default:
 		WARN(1, "TPACKET version not supported\n");
 		BUG();
@@ -1083,10 +1086,10 @@ static void *packet_current_rx_frame(struct packet_sock *po,
 	}
 }
 
-static void *prb_lookup_block(struct packet_sock *po,
-				     struct packet_ring_buffer *rb,
-				     unsigned int idx,
-				     int status)
+static void *prb_lookup_block(const struct packet_sock *po,
+			      const struct packet_ring_buffer *rb,
+			      unsigned int idx,
+			      int status)
 {
 	struct tpacket_kbdq_core *pkc  = GET_PBDQC_FROM_RB(rb);
 	struct tpacket_block_desc *pbd = GET_PBLOCK_DESC(pkc, idx);
@@ -1199,12 +1202,12 @@ static void packet_free_pending(struct packet_sock *po)
 #define ROOM_LOW	0x1
 #define ROOM_NORMAL	0x2
 
-static bool __tpacket_has_room(struct packet_sock *po, int pow_off)
+static bool __tpacket_has_room(const struct packet_sock *po, int pow_off)
 {
 	int idx, len;
 
-	len = po->rx_ring.frame_max + 1;
-	idx = po->rx_ring.head;
+	len = READ_ONCE(po->rx_ring.frame_max) + 1;
+	idx = READ_ONCE(po->rx_ring.head);
 	if (pow_off)
 		idx += len >> pow_off;
 	if (idx >= len)
@@ -1212,12 +1215,12 @@ static bool __tpacket_has_room(struct packet_sock *po, int pow_off)
 	return packet_lookup_frame(po, &po->rx_ring, idx, TP_STATUS_KERNEL);
 }
 
-static bool __tpacket_v3_has_room(struct packet_sock *po, int pow_off)
+static bool __tpacket_v3_has_room(const struct packet_sock *po, int pow_off)
 {
 	int idx, len;
 
-	len = po->rx_ring.prb_bdqc.knum_blocks;
-	idx = po->rx_ring.prb_bdqc.kactive_blk_num;
+	len = READ_ONCE(po->rx_ring.prb_bdqc.knum_blocks);
+	idx = READ_ONCE(po->rx_ring.prb_bdqc.kactive_blk_num);
 	if (pow_off)
 		idx += len >> pow_off;
 	if (idx >= len)
@@ -1225,15 +1228,18 @@ static bool __tpacket_v3_has_room(struct packet_sock *po, int pow_off)
 	return prb_lookup_block(po, &po->rx_ring, idx, TP_STATUS_KERNEL);
 }
 
-static int __packet_rcv_has_room(struct packet_sock *po, struct sk_buff *skb)
+static int __packet_rcv_has_room(const struct packet_sock *po,
+				 const struct sk_buff *skb)
 {
-	struct sock *sk = &po->sk;
+	const struct sock *sk = &po->sk;
 	int ret = ROOM_NONE;
 
 	if (po->prot_hook.func != tpacket_rcv) {
-		int avail = sk->sk_rcvbuf - atomic_read(&sk->sk_rmem_alloc)
-					  - (skb ? skb->truesize : 0);
-		if (avail > (sk->sk_rcvbuf >> ROOM_POW_OFF))
+		int rcvbuf = READ_ONCE(sk->sk_rcvbuf);
+		int avail = rcvbuf - atomic_read(&sk->sk_rmem_alloc)
+				   - (skb ? skb->truesize : 0);
+
+		if (avail > (rcvbuf >> ROOM_POW_OFF))
 			return ROOM_NORMAL;
 		else if (avail > 0)
 			return ROOM_LOW;
@@ -1258,17 +1264,22 @@ static int __packet_rcv_has_room(struct packet_sock *po, struct sk_buff *skb)
 
 static int packet_rcv_has_room(struct packet_sock *po, struct sk_buff *skb)
 {
-	int ret;
-	bool has_room;
+	int pressure, ret;
 
-	spin_lock_bh(&po->sk.sk_receive_queue.lock);
 	ret = __packet_rcv_has_room(po, skb);
-	has_room = ret == ROOM_NORMAL;
-	if (po->pressure == has_room)
-		po->pressure = !has_room;
-	spin_unlock_bh(&po->sk.sk_receive_queue.lock);
+	pressure = ret != ROOM_NORMAL;
+
+	if (READ_ONCE(po->pressure) != pressure)
+		WRITE_ONCE(po->pressure, pressure);
 
 	return ret;
+}
+
+static void packet_rcv_try_clear_pressure(struct packet_sock *po)
+{
+	if (READ_ONCE(po->pressure) &&
+	    __packet_rcv_has_room(po, NULL) == ROOM_NORMAL)
+		WRITE_ONCE(po->pressure,  0);
 }
 
 static void packet_sock_destruct(struct sock *sk)
@@ -1288,15 +1299,21 @@ static void packet_sock_destruct(struct sock *sk)
 
 static bool fanout_flow_is_huge(struct packet_sock *po, struct sk_buff *skb)
 {
-	u32 rxhash;
+	u32 *history = po->rollover->history;
+	u32 victim, rxhash;
 	int i, count = 0;
 
 	rxhash = skb_get_hash(skb);
 	for (i = 0; i < ROLLOVER_HLEN; i++)
-		if (po->rollover->history[i] == rxhash)
+		if (READ_ONCE(history[i]) == rxhash)
 			count++;
 
-	po->rollover->history[prandom_u32() % ROLLOVER_HLEN] = rxhash;
+	victim = prandom_u32() % ROLLOVER_HLEN;
+
+	/* Avoid dirtying the cache line if possible */
+	if (READ_ONCE(history[victim]) != rxhash)
+		WRITE_ONCE(history[victim], rxhash);
+
 	return count > (ROLLOVER_HLEN >> 1);
 }
 
@@ -1351,7 +1368,7 @@ static unsigned int fanout_demux_rollover(struct packet_fanout *f,
 	i = j = min_t(int, po->rollover->sock, num - 1);
 	do {
 		po_next = pkt_sk(f->arr[i]);
-		if (po_next != po_skip && !po_next->pressure &&
+		if (po_next != po_skip && !READ_ONCE(po_next->pressure) &&
 		    packet_rcv_has_room(po_next, skb) == ROOM_NORMAL) {
 			if (i != j)
 				po->rollover->sock = i;
@@ -1521,7 +1538,7 @@ static void __fanout_set_data_bpf(struct packet_fanout *f, struct bpf_prog *new)
 	}
 }
 
-static int fanout_set_data_cbpf(struct packet_sock *po, char __user *data,
+static int fanout_set_data_cbpf(struct packet_sock *po, sockptr_t data,
 				unsigned int len)
 {
 	struct bpf_prog *new;
@@ -1530,10 +1547,10 @@ static int fanout_set_data_cbpf(struct packet_sock *po, char __user *data,
 
 	if (sock_flag(&po->sk, SOCK_FILTER_LOCKED))
 		return -EPERM;
-	if (len != sizeof(fprog))
-		return -EINVAL;
-	if (copy_from_user(&fprog, data, len))
-		return -EFAULT;
+
+	ret = copy_bpf_fprog_from_user(&fprog, data, len);
+	if (ret)
+		return ret;
 
 	ret = bpf_prog_create_from_user(&new, &fprog, NULL, false);
 	if (ret)
@@ -1543,7 +1560,7 @@ static int fanout_set_data_cbpf(struct packet_sock *po, char __user *data,
 	return 0;
 }
 
-static int fanout_set_data_ebpf(struct packet_sock *po, char __user *data,
+static int fanout_set_data_ebpf(struct packet_sock *po, sockptr_t data,
 				unsigned int len)
 {
 	struct bpf_prog *new;
@@ -1553,7 +1570,7 @@ static int fanout_set_data_ebpf(struct packet_sock *po, char __user *data,
 		return -EPERM;
 	if (len != sizeof(fd))
 		return -EINVAL;
-	if (copy_from_user(&fd, data, len))
+	if (copy_from_sockptr(&fd, data, len))
 		return -EFAULT;
 
 	new = bpf_prog_get_type(fd, BPF_PROG_TYPE_SOCKET_FILTER);
@@ -1564,7 +1581,7 @@ static int fanout_set_data_ebpf(struct packet_sock *po, char __user *data,
 	return 0;
 }
 
-static int fanout_set_data(struct packet_sock *po, char __user *data,
+static int fanout_set_data(struct packet_sock *po, sockptr_t data,
 			   unsigned int len)
 {
 	switch (po->fanout->type) {
@@ -1814,7 +1831,7 @@ static int packet_rcv_spkt(struct sk_buff *skb, struct net_device *dev,
 	skb_dst_drop(skb);
 
 	/* drop conntrack reference */
-	nf_reset(skb);
+	nf_reset_ct(skb);
 
 	spkt = &PACKET_SKB_CB(skb)->sa.pkt;
 
@@ -2114,7 +2131,7 @@ static int packet_rcv(struct sk_buff *skb, struct net_device *dev,
 	skb_dst_drop(skb);
 
 	/* drop conntrack reference */
-	nf_reset(skb);
+	nf_reset_ct(skb);
 
 	spin_lock(&sk->sk_receive_queue.lock);
 	po->stats.stats1.tp_packets++;
@@ -2126,10 +2143,8 @@ static int packet_rcv(struct sk_buff *skb, struct net_device *dev,
 
 drop_n_acct:
 	is_drop_n_account = true;
-	spin_lock(&sk->sk_receive_queue.lock);
-	po->stats.stats1.tp_drops++;
+	atomic_inc(&po->tp_drops);
 	atomic_inc(&sk->sk_drops);
-	spin_unlock(&sk->sk_receive_queue.lock);
 
 drop_n_restore:
 	if (skb_head != skb->data && skb_shared(skb)) {
@@ -2155,11 +2170,13 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
 	int skb_len = skb->len;
 	unsigned int snaplen, res;
 	unsigned long status = TP_STATUS_USER;
-	unsigned short macoff, netoff, hdrlen;
+	unsigned short macoff, hdrlen;
+	unsigned int netoff;
 	struct sk_buff *copy_skb = NULL;
-	struct timespec ts;
+	struct timespec64 ts;
 	__u32 ts_status;
 	bool is_drop_n_account = false;
+	unsigned int slot_id = 0;
 	bool do_vnet = false;
 
 	/* struct tpacket{2,3}_hdr is aligned to a multiple of TPACKET_ALIGNMENT.
@@ -2193,6 +2210,12 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
 	if (!res)
 		goto drop_n_restore;
 
+	/* If we are flooded, just give up */
+	if (__packet_rcv_has_room(po, skb) == ROOM_NONE) {
+		atomic_inc(&po->tp_drops);
+		goto drop_n_restore;
+	}
+
 	if (skb->ip_summed == CHECKSUM_PARTIAL)
 		status |= TP_STATUS_CSUMNOTREADY;
 	else if (skb->pkt_type != PACKET_OUTGOING &&
@@ -2216,6 +2239,10 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
 			do_vnet = true;
 		}
 		macoff = netoff - maclen;
+	}
+	if (netoff > USHRT_MAX) {
+		atomic_inc(&po->tp_drops);
+		goto drop_n_restore;
 	}
 	if (po->tp_version <= TPACKET_V2) {
 		if (macoff + snaplen > po->rx_ring.frame_size) {
@@ -2255,6 +2282,23 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
 					TP_STATUS_KERNEL, (macoff+snaplen));
 	if (!h.raw)
 		goto drop_n_account;
+
+	if (po->tp_version <= TPACKET_V2) {
+		slot_id = po->rx_ring.head;
+		if (test_bit(slot_id, po->rx_ring.rx_owner_map))
+			goto drop_n_account;
+		__set_bit(slot_id, po->rx_ring.rx_owner_map);
+	}
+
+	if (do_vnet &&
+	    virtio_net_hdr_from_skb(skb, h.raw + macoff -
+				    sizeof(struct virtio_net_hdr),
+				    vio_le(), true, 0)) {
+		if (po->tp_version == TPACKET_V3)
+			prb_clear_blk_fill_status(&po->rx_ring);
+		goto drop_n_account;
+	}
+
 	if (po->tp_version <= TPACKET_V2) {
 		packet_increment_rx_head(po, &po->rx_ring);
 	/*
@@ -2263,15 +2307,9 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
 	 * Anyways, moving it for V1/V2 only as V3 doesn't need this
 	 * at packet level.
 	 */
-		if (po->stats.stats1.tp_drops)
+		if (atomic_read(&po->tp_drops))
 			status |= TP_STATUS_LOSING;
 	}
-
-	if (do_vnet &&
-	    virtio_net_hdr_from_skb(skb, h.raw + macoff -
-				    sizeof(struct virtio_net_hdr),
-				    vio_le(), true, 0))
-		goto drop_n_account;
 
 	po->stats.stats1.tp_packets++;
 	if (copy_skb) {
@@ -2283,7 +2321,7 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
 	skb_copy_bits(skb, 0, h.raw + macoff, snaplen);
 
 	if (!(ts_status = tpacket_get_timestamp(skb, &ts, po->tp_tstamp)))
-		getnstimeofday(&ts);
+		ktime_get_real_ts64(&ts);
 
 	status |= ts_status;
 
@@ -2360,9 +2398,12 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
 #endif
 
 	if (po->tp_version <= TPACKET_V2) {
+		spin_lock(&sk->sk_receive_queue.lock);
 		__packet_set_status(po, h.raw, status);
+		__clear_bit(slot_id, po->rx_ring.rx_owner_map);
+		spin_unlock(&sk->sk_receive_queue.lock);
 		sk->sk_data_ready(sk);
-	} else {
+	} else if (po->tp_version == TPACKET_V3) {
 		prb_clear_blk_fill_status(&po->rx_ring);
 	}
 
@@ -2379,9 +2420,9 @@ drop:
 	return 0;
 
 drop_n_account:
-	is_drop_n_account = true;
-	po->stats.stats1.tp_drops++;
 	spin_unlock(&sk->sk_receive_queue.lock);
+	atomic_inc(&po->tp_drops);
+	is_drop_n_account = true;
 
 	sk->sk_data_ready(sk);
 	kfree_skb(copy_skb);
@@ -2401,6 +2442,9 @@ static void tpacket_destruct_skb(struct sk_buff *skb)
 
 		ts = __packet_set_timestamp(po, ph, skb);
 		__packet_set_status(po, ph, TP_STATUS_AVAILABLE | ts);
+
+		if (!packet_read_pending(&po->tx_ring))
+			complete(&po->skb_completion);
 	}
 
 	sock_wfree(skb);
@@ -2585,7 +2629,7 @@ static int tpacket_parse_header(struct packet_sock *po, void *frame,
 
 static int tpacket_snd(struct packet_sock *po, struct msghdr *msg)
 {
-	struct sk_buff *skb;
+	struct sk_buff *skb = NULL;
 	struct net_device *dev;
 	struct virtio_net_hdr *vnet_hdr = NULL;
 	struct sockcm_cookie sockc;
@@ -2600,9 +2644,17 @@ static int tpacket_snd(struct packet_sock *po, struct msghdr *msg)
 	int len_sum = 0;
 	int status = TP_STATUS_AVAILABLE;
 	int hlen, tlen, copylen = 0;
+	long timeo = 0;
 
 	mutex_lock(&po->pg_vec_lock);
 
+	/* packet_sendmsg() check on tx_ring.pg_vec was lockless,
+	 * we need to confirm it under protection of pg_vec_lock.
+	 */
+	if (unlikely(!po->tx_ring.pg_vec)) {
+		err = -EBUSY;
+		goto out;
+	}
 	if (likely(saddr == NULL)) {
 		dev	= packet_cached_dev_get(po);
 		proto	= po->num;
@@ -2646,12 +2698,21 @@ static int tpacket_snd(struct packet_sock *po, struct msghdr *msg)
 	if ((size_max > dev->mtu + reserve + VLAN_HLEN) && !po->has_vnet_hdr)
 		size_max = dev->mtu + reserve + VLAN_HLEN;
 
+	reinit_completion(&po->skb_completion);
+
 	do {
 		ph = packet_current_frame(po, &po->tx_ring,
 					  TP_STATUS_SEND_REQUEST);
 		if (unlikely(ph == NULL)) {
-			if (need_wait && need_resched())
-				schedule();
+			if (need_wait && skb) {
+				timeo = sock_sndtimeo(&po->sk, msg->msg_flags & MSG_DONTWAIT);
+				timeo = wait_for_completion_interruptible_timeout(&po->skb_completion, timeo);
+				if (timeo <= 0) {
+					err = !timeo ? -ETIMEDOUT : -ERESTARTSYS;
+					goto out_put;
+				}
+			}
+			/* check for additional frames */
 			continue;
 		}
 
@@ -3207,6 +3268,7 @@ static int packet_create(struct net *net, struct socket *sock, int protocol,
 	sock_init_data(sock, sk);
 
 	po = pkt_sk(sk);
+	init_completion(&po->skb_completion);
 	sk->sk_family = PF_PACKET;
 	po->num = proto;
 	po->xmit = dev_queue_xmit;
@@ -3304,8 +3366,7 @@ static int packet_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	if (skb == NULL)
 		goto out;
 
-	if (pkt_sk(sk)->pressure)
-		packet_rcv_has_room(pkt_sk(sk), NULL);
+	packet_rcv_try_clear_pressure(pkt_sk(sk));
 
 	if (pkt_sk(sk)->has_vnet_hdr) {
 		err = packet_rcv_vnet(msg, skb, &len);
@@ -3601,7 +3662,8 @@ static void packet_flush_mclist(struct sock *sk)
 }
 
 static int
-packet_setsockopt(struct socket *sock, int level, int optname, char __user *optval, unsigned int optlen)
+packet_setsockopt(struct socket *sock, int level, int optname, sockptr_t optval,
+		  unsigned int optlen)
 {
 	struct sock *sk = sock->sk;
 	struct packet_sock *po = pkt_sk(sk);
@@ -3621,7 +3683,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 			return -EINVAL;
 		if (len > sizeof(mreq))
 			len = sizeof(mreq);
-		if (copy_from_user(&mreq, optval, len))
+		if (copy_from_sockptr(&mreq, optval, len))
 			return -EFAULT;
 		if (len < (mreq.mr_alen + offsetof(struct packet_mreq, mr_address)))
 			return -EINVAL;
@@ -3652,7 +3714,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 		if (optlen < len) {
 			ret = -EINVAL;
 		} else {
-			if (copy_from_user(&req_u.req, optval, len))
+			if (copy_from_sockptr(&req_u.req, optval, len))
 				ret = -EFAULT;
 			else
 				ret = packet_set_ring(sk, &req_u, 0,
@@ -3667,7 +3729,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		if (optlen != sizeof(val))
 			return -EINVAL;
-		if (copy_from_user(&val, optval, sizeof(val)))
+		if (copy_from_sockptr(&val, optval, sizeof(val)))
 			return -EFAULT;
 
 		pkt_sk(sk)->copy_thresh = val;
@@ -3679,7 +3741,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		if (optlen != sizeof(val))
 			return -EINVAL;
-		if (copy_from_user(&val, optval, sizeof(val)))
+		if (copy_from_sockptr(&val, optval, sizeof(val)))
 			return -EFAULT;
 		switch (val) {
 		case TPACKET_V1:
@@ -3705,7 +3767,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		if (optlen != sizeof(val))
 			return -EINVAL;
-		if (copy_from_user(&val, optval, sizeof(val)))
+		if (copy_from_sockptr(&val, optval, sizeof(val)))
 			return -EFAULT;
 		if (val > INT_MAX)
 			return -EINVAL;
@@ -3725,7 +3787,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		if (optlen != sizeof(val))
 			return -EINVAL;
-		if (copy_from_user(&val, optval, sizeof(val)))
+		if (copy_from_sockptr(&val, optval, sizeof(val)))
 			return -EFAULT;
 
 		lock_sock(sk);
@@ -3744,7 +3806,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		if (optlen < sizeof(val))
 			return -EINVAL;
-		if (copy_from_user(&val, optval, sizeof(val)))
+		if (copy_from_sockptr(&val, optval, sizeof(val)))
 			return -EFAULT;
 
 		lock_sock(sk);
@@ -3758,7 +3820,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		if (optlen < sizeof(val))
 			return -EINVAL;
-		if (copy_from_user(&val, optval, sizeof(val)))
+		if (copy_from_sockptr(&val, optval, sizeof(val)))
 			return -EFAULT;
 
 		lock_sock(sk);
@@ -3774,7 +3836,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 			return -EINVAL;
 		if (optlen < sizeof(val))
 			return -EINVAL;
-		if (copy_from_user(&val, optval, sizeof(val)))
+		if (copy_from_sockptr(&val, optval, sizeof(val)))
 			return -EFAULT;
 
 		lock_sock(sk);
@@ -3793,7 +3855,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		if (optlen != sizeof(val))
 			return -EINVAL;
-		if (copy_from_user(&val, optval, sizeof(val)))
+		if (copy_from_sockptr(&val, optval, sizeof(val)))
 			return -EFAULT;
 
 		po->tp_tstamp = val;
@@ -3805,7 +3867,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		if (optlen != sizeof(val))
 			return -EINVAL;
-		if (copy_from_user(&val, optval, sizeof(val)))
+		if (copy_from_sockptr(&val, optval, sizeof(val)))
 			return -EFAULT;
 
 		return fanout_add(sk, val & 0xffff, val >> 16);
@@ -3823,7 +3885,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		if (optlen != sizeof(val))
 			return -EINVAL;
-		if (copy_from_user(&val, optval, sizeof(val)))
+		if (copy_from_sockptr(&val, optval, sizeof(val)))
 			return -EFAULT;
 		if (val < 0 || val > 1)
 			return -EINVAL;
@@ -3837,7 +3899,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		if (optlen != sizeof(val))
 			return -EINVAL;
-		if (copy_from_user(&val, optval, sizeof(val)))
+		if (copy_from_sockptr(&val, optval, sizeof(val)))
 			return -EFAULT;
 
 		lock_sock(sk);
@@ -3856,7 +3918,7 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		if (optlen != sizeof(val))
 			return -EINVAL;
-		if (copy_from_user(&val, optval, sizeof(val)))
+		if (copy_from_sockptr(&val, optval, sizeof(val)))
 			return -EFAULT;
 
 		po->xmit = val ? packet_direct_xmit : dev_queue_xmit;
@@ -3877,6 +3939,7 @@ static int packet_getsockopt(struct socket *sock, int level, int optname,
 	void *data = &val;
 	union tpacket_stats_u st;
 	struct tpacket_rollover_stats rstats;
+	int drops;
 
 	if (level != SOL_PACKET)
 		return -ENOPROTOOPT;
@@ -3893,14 +3956,17 @@ static int packet_getsockopt(struct socket *sock, int level, int optname,
 		memcpy(&st, &po->stats, sizeof(st));
 		memset(&po->stats, 0, sizeof(po->stats));
 		spin_unlock_bh(&sk->sk_receive_queue.lock);
+		drops = atomic_xchg(&po->tp_drops, 0);
 
 		if (po->tp_version == TPACKET_V3) {
 			lv = sizeof(struct tpacket_stats_v3);
-			st.stats3.tp_packets += st.stats3.tp_drops;
+			st.stats3.tp_drops = drops;
+			st.stats3.tp_packets += drops;
 			data = &st.stats3;
 		} else {
 			lv = sizeof(struct tpacket_stats);
-			st.stats1.tp_packets += st.stats1.tp_drops;
+			st.stats1.tp_drops = drops;
+			st.stats1.tp_packets += drops;
 			data = &st.stats1;
 		}
 
@@ -3985,28 +4051,6 @@ static int packet_getsockopt(struct socket *sock, int level, int optname,
 	return 0;
 }
 
-
-#ifdef CONFIG_COMPAT
-static int compat_packet_setsockopt(struct socket *sock, int level, int optname,
-				    char __user *optval, unsigned int optlen)
-{
-	struct packet_sock *po = pkt_sk(sock->sk);
-
-	if (level != SOL_PACKET)
-		return -ENOPROTOOPT;
-
-	if (optname == PACKET_FANOUT_DATA &&
-	    po->fanout && po->fanout->type == PACKET_FANOUT_CBPF) {
-		optval = (char __user *)get_compat_bpf_fprog(optval);
-		if (!optval)
-			return -EFAULT;
-		optlen = sizeof(struct sock_fprog);
-	}
-
-	return packet_setsockopt(sock, level, optname, optval, optlen);
-}
-#endif
-
 static int packet_notifier(struct notifier_block *this,
 			   unsigned long msg, void *ptr)
 {
@@ -4022,7 +4066,7 @@ static int packet_notifier(struct notifier_block *this,
 		case NETDEV_UNREGISTER:
 			if (po->mclist)
 				packet_dev_mclist_delete(dev, &po->mclist);
-			/* fallthrough */
+			fallthrough;
 
 		case NETDEV_DOWN:
 			if (dev->ifindex == po->ifindex) {
@@ -4119,8 +4163,7 @@ static __poll_t packet_poll(struct file *file, struct socket *sock,
 			TP_STATUS_KERNEL))
 			mask |= EPOLLIN | EPOLLRDNORM;
 	}
-	if (po->pressure && __packet_rcv_has_room(po, NULL) == ROOM_NORMAL)
-		po->pressure = 0;
+	packet_rcv_try_clear_pressure(po);
 	spin_unlock_bh(&sk->sk_receive_queue.lock);
 	spin_lock_bh(&sk->sk_write_queue.lock);
 	if (po->tx_ring.pg_vec) {
@@ -4234,11 +4277,12 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 {
 	struct pgv *pg_vec = NULL;
 	struct packet_sock *po = pkt_sk(sk);
+	unsigned long *rx_owner_map = NULL;
 	int was_running, order = 0;
 	struct packet_ring_buffer *rb;
 	struct sk_buff_head *rb_queue;
 	__be16 num;
-	int err = -EINVAL;
+	int err;
 	/* Added to avoid minimal code churn */
 	struct tpacket_req *req = &req_u->req;
 
@@ -4314,11 +4358,17 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 				    req3->tp_sizeof_priv ||
 				    req3->tp_feature_req_word) {
 					err = -EINVAL;
-					goto out;
+					goto out_free_pg_vec;
 				}
 			}
 			break;
 		default:
+			if (!tx_ring) {
+				rx_owner_map = bitmap_alloc(req->tp_frame_nr,
+					GFP_KERNEL | __GFP_NOWARN | __GFP_ZERO);
+				if (!rx_owner_map)
+					goto out_free_pg_vec;
+			}
 			break;
 		}
 	}
@@ -4348,6 +4398,8 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 		err = 0;
 		spin_lock_bh(&rb_queue->lock);
 		swap(rb->pg_vec, pg_vec);
+		if (po->tp_version <= TPACKET_V2)
+			swap(rb->rx_owner_map, rx_owner_map);
 		rb->frame_max = (req->tp_frame_nr - 1);
 		rb->head = 0;
 		rb->frame_size = req->tp_frame_size;
@@ -4378,6 +4430,8 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 			prb_shutdown_retire_blk_timer(po, rb_queue);
 	}
 
+out_free_pg_vec:
+	bitmap_free(rx_owner_map);
 	if (pg_vec)
 		free_pg_vec(pg_vec, order, req->tp_block_nr);
 out:
@@ -4460,8 +4514,6 @@ static const struct proto_ops packet_ops_spkt = {
 	.gettstamp =	sock_gettstamp,
 	.listen =	sock_no_listen,
 	.shutdown =	sock_no_shutdown,
-	.setsockopt =	sock_no_setsockopt,
-	.getsockopt =	sock_no_getsockopt,
 	.sendmsg =	packet_sendmsg_spkt,
 	.recvmsg =	packet_recvmsg,
 	.mmap =		sock_no_mmap,
@@ -4484,9 +4536,6 @@ static const struct proto_ops packet_ops = {
 	.shutdown =	sock_no_shutdown,
 	.setsockopt =	packet_setsockopt,
 	.getsockopt =	packet_getsockopt,
-#ifdef CONFIG_COMPAT
-	.compat_setsockopt = compat_packet_setsockopt,
-#endif
 	.sendmsg =	packet_sendmsg,
 	.recvmsg =	packet_recvmsg,
 	.mmap =		packet_mmap,

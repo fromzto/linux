@@ -126,8 +126,8 @@ int ubifs_search_zbranch(const struct ubifs_info *c,
 			 const struct ubifs_znode *znode,
 			 const union ubifs_key *key, int *n)
 {
-	int beg = 0, end = znode->child_cnt, uninitialized_var(mid);
-	int uninitialized_var(cmp);
+	int beg = 0, end = znode->child_cnt, mid;
+	int cmp;
 	const struct ubifs_zbranch *zbr = &znode->zbranch[0];
 
 	ubifs_assert(c, end > beg);
@@ -284,6 +284,7 @@ static int read_znode(struct ubifs_info *c, struct ubifs_zbranch *zzbr,
 	err = ubifs_node_check_hash(c, idx, zzbr->hash);
 	if (err) {
 		ubifs_bad_hash(c, idx, zzbr->hash, lnum, offs);
+		kfree(idx);
 		return err;
 	}
 

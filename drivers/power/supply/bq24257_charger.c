@@ -5,9 +5,9 @@
  * Copyright (C) 2015 Intel Corporation
  *
  * Datasheets:
- * http://www.ti.com/product/bq24250
- * http://www.ti.com/product/bq24251
- * http://www.ti.com/product/bq24257
+ * https://www.ti.com/product/bq24250
+ * https://www.ti.com/product/bq24251
+ * https://www.ti.com/product/bq24257
  */
 
 #include <linux/module.h>
@@ -950,7 +950,7 @@ static int bq24257_fw_probe(struct bq24257_device *bq)
 static int bq24257_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
 {
-	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
+	struct i2c_adapter *adapter = client->adapter;
 	struct device *dev = &client->dev;
 	const struct acpi_device_id *acpi_id;
 	struct bq24257_device *bq;

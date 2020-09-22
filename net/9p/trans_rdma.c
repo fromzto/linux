@@ -94,14 +94,15 @@ struct p9_trans_rdma {
 	struct completion cm_done;
 };
 
+struct p9_rdma_req;
+
 /**
- * p9_rdma_context - Keeps track of in-process WR
+ * struct p9_rdma_context - Keeps track of in-process WR
  *
  * @busa: Bus address to unmap when the WR completes
  * @req: Keeps track of requests (send)
  * @rc: Keepts track of replies (receive)
  */
-struct p9_rdma_req;
 struct p9_rdma_context {
 	struct ib_cqe cqe;
 	dma_addr_t busa;
@@ -112,7 +113,7 @@ struct p9_rdma_context {
 };
 
 /**
- * p9_rdma_opts - Collection of mount options
+ * struct p9_rdma_opts - Collection of mount options
  * @port: port of connection
  * @sq_depth: The requested depth of the SQ. This really doesn't need
  * to be any deeper than the number of threads used in the client
@@ -685,9 +686,9 @@ rdma_create_trans(struct p9_client *client, const char *addr, char *args)
 		goto error;
 
 	/* Create the Completion Queue */
-	rdma->cq = ib_alloc_cq(rdma->cm_id->device, client,
-			opts.sq_depth + opts.rq_depth + 1,
-			0, IB_POLL_SOFTIRQ);
+	rdma->cq = ib_alloc_cq_any(rdma->cm_id->device, client,
+				   opts.sq_depth + opts.rq_depth + 1,
+				   IB_POLL_SOFTIRQ);
 	if (IS_ERR(rdma->cq))
 		goto error;
 

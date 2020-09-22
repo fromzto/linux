@@ -120,7 +120,7 @@ static ssize_t fuse_conn_max_background_write(struct file *file,
 					      const char __user *buf,
 					      size_t count, loff_t *ppos)
 {
-	unsigned uninitialized_var(val);
+	unsigned val;
 	ssize_t ret;
 
 	ret = fuse_conn_limit_write(file, buf, count, ppos, &val,
@@ -162,7 +162,7 @@ static ssize_t fuse_conn_congestion_threshold_write(struct file *file,
 						    const char __user *buf,
 						    size_t count, loff_t *ppos)
 {
-	unsigned uninitialized_var(val);
+	unsigned val;
 	struct fuse_conn *fc;
 	ssize_t ret;
 
@@ -346,7 +346,7 @@ static int fuse_ctl_fill_super(struct super_block *sb, struct fs_context *fctx)
 
 static int fuse_ctl_get_tree(struct fs_context *fc)
 {
-	return vfs_get_super(fc, vfs_get_single_super, fuse_ctl_fill_super);
+	return get_tree_single(fc, fuse_ctl_fill_super);
 }
 
 static const struct fs_context_operations fuse_ctl_context_ops = {

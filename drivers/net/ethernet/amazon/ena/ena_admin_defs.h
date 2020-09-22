@@ -60,6 +60,7 @@ enum ena_admin_aq_feature_id {
 	ENA_ADMIN_MAX_QUEUES_NUM                    = 2,
 	ENA_ADMIN_HW_HINTS                          = 3,
 	ENA_ADMIN_LLQ                               = 4,
+	ENA_ADMIN_MAX_QUEUES_EXT                    = 7,
 	ENA_ADMIN_RSS_HASH_FUNCTION                 = 10,
 	ENA_ADMIN_STATELESS_OFFLOAD_CONFIG          = 11,
 	ENA_ADMIN_RSS_REDIRECTION_TABLE_CONFIG      = 12,
@@ -403,6 +404,10 @@ struct ena_admin_basic_stats {
 	u32 rx_drops_low;
 
 	u32 rx_drops_high;
+
+	u32 tx_drops_low;
+
+	u32 tx_drops_high;
 };
 
 struct ena_admin_acq_get_stats_resp {
@@ -421,7 +426,13 @@ struct ena_admin_get_set_feature_common_desc {
 	/* as appears in ena_admin_aq_feature_id */
 	u8 feature_id;
 
-	u16 reserved16;
+	/* The driver specifies the max feature version it supports and the
+	 * device responds with the currently supported feature version. The
+	 * field is zero based
+	 */
+	u8 feature_version;
+
+	u8 reserved8;
 };
 
 struct ena_admin_device_attr_feature_desc {
@@ -480,6 +491,36 @@ enum ena_admin_llq_stride_ctrl {
 	ENA_ADMIN_MULTIPLE_DESCS_PER_ENTRY          = 2,
 };
 
+enum ena_admin_accel_mode_feat {
+	ENA_ADMIN_DISABLE_META_CACHING              = 0,
+	ENA_ADMIN_LIMIT_TX_BURST                    = 1,
+};
+
+struct ena_admin_accel_mode_get {
+	/* bit field of enum ena_admin_accel_mode_feat */
+	u16 supported_flags;
+
+	/* maximum burst size between two doorbells. The size is in bytes */
+	u16 max_tx_burst_size;
+};
+
+struct ena_admin_accel_mode_set {
+	/* bit field of enum ena_admin_accel_mode_feat */
+	u16 enabled_flags;
+
+	u16 reserved;
+};
+
+struct ena_admin_accel_mode_req {
+	union {
+		u32 raw[2];
+
+		struct ena_admin_accel_mode_get get;
+
+		struct ena_admin_accel_mode_set set;
+	} u;
+};
+
 struct ena_admin_feature_llq_desc {
 	u32 max_llq_num;
 
@@ -524,6 +565,42 @@ struct ena_admin_feature_llq_desc {
 
 	/* the stride control the driver selected to use */
 	u16 descriptors_stride_ctrl_enabled;
+
+	/* reserved */
+	u32 reserved1;
+
+	/* accelerated low latency queues requirement. driver needs to
+	 * support those requirements in order to use accelerated llq
+	 */
+	struct ena_admin_accel_mode_req accel_mode;
+};
+
+struct ena_admin_queue_ext_feature_fields {
+	u32 max_tx_sq_num;
+
+	u32 max_tx_cq_num;
+
+	u32 max_rx_sq_num;
+
+	u32 max_rx_cq_num;
+
+	u32 max_tx_sq_depth;
+
+	u32 max_tx_cq_depth;
+
+	u32 max_rx_sq_depth;
+
+	u32 max_rx_cq_depth;
+
+	u32 max_tx_header_size;
+
+	/* Maximum Descriptors number, including meta descriptor, allowed for
+	 * a single Tx packet
+	 */
+	u16 max_per_packet_tx_descs;
+
+	/* Maximum Descriptors number allowed for a single Rx packet */
+	u16 max_per_packet_rx_descs;
 };
 
 struct ena_admin_queue_feature_desc {
@@ -724,8 +801,8 @@ enum ena_admin_os_type {
 	ENA_ADMIN_OS_DPDK                           = 3,
 	ENA_ADMIN_OS_FREEBSD                        = 4,
 	ENA_ADMIN_OS_IPXE                           = 5,
-	ENA_ADMIN_OS_ESXI			    = 6,
-	ENA_ADMIN_OS_GROUPS_NUM			    = 6,
+	ENA_ADMIN_OS_ESXI                           = 6,
+	ENA_ADMIN_OS_GROUPS_NUM                     = 6,
 };
 
 struct ena_admin_host_info {
@@ -768,6 +845,15 @@ struct ena_admin_host_info {
 	u16 num_cpus;
 
 	u16 reserved;
+
+	/* 0 : reserved
+	 * 1 : rx_offset
+	 * 2 : interrupt_moderation
+	 * 3 : rx_buf_mirroring
+	 * 4 : rss_configurable_function_key
+	 * 31:5 : reserved
+	 */
+	u32 driver_supported_features;
 };
 
 struct ena_admin_rss_ind_table_entry {
@@ -832,6 +918,19 @@ struct ena_admin_get_feat_cmd {
 	u32 raw[11];
 };
 
+struct ena_admin_queue_ext_feature_desc {
+	/* version */
+	u8 version;
+
+	u8 reserved1[3];
+
+	union {
+		struct ena_admin_queue_ext_feature_fields max_queue_ext;
+
+		u32 raw[10];
+	};
+};
+
 struct ena_admin_get_feat_resp {
 	struct ena_admin_acq_common_desc acq_common_desc;
 
@@ -843,6 +942,8 @@ struct ena_admin_get_feat_resp {
 		struct ena_admin_feature_llq_desc llq;
 
 		struct ena_admin_queue_feature_desc max_queue;
+
+		struct ena_admin_queue_ext_feature_desc max_queue_ext;
 
 		struct ena_admin_feature_aenq_desc aenq;
 
@@ -908,7 +1009,9 @@ struct ena_admin_aenq_common_desc {
 
 	u16 syndrom;
 
-	/* 0 : phase */
+	/* 0 : phase
+	 * 7:1 : reserved - MBZ
+	 */
 	u8 flags;
 
 	u8 reserved1[3];
@@ -954,6 +1057,10 @@ struct ena_admin_aenq_keep_alive_desc {
 	u32 rx_drops_low;
 
 	u32 rx_drops_high;
+
+	u32 tx_drops_low;
+
+	u32 tx_drops_high;
 };
 
 struct ena_admin_ena_mmio_req_read_less_resp {
@@ -1053,6 +1160,14 @@ struct ena_admin_ena_mmio_req_read_less_resp {
 #define ENA_ADMIN_HOST_INFO_DEVICE_MASK                     GENMASK(7, 3)
 #define ENA_ADMIN_HOST_INFO_BUS_SHIFT                       8
 #define ENA_ADMIN_HOST_INFO_BUS_MASK                        GENMASK(15, 8)
+#define ENA_ADMIN_HOST_INFO_RX_OFFSET_SHIFT                 1
+#define ENA_ADMIN_HOST_INFO_RX_OFFSET_MASK                  BIT(1)
+#define ENA_ADMIN_HOST_INFO_INTERRUPT_MODERATION_SHIFT      2
+#define ENA_ADMIN_HOST_INFO_INTERRUPT_MODERATION_MASK       BIT(2)
+#define ENA_ADMIN_HOST_INFO_RX_BUF_MIRRORING_SHIFT          3
+#define ENA_ADMIN_HOST_INFO_RX_BUF_MIRRORING_MASK           BIT(3)
+#define ENA_ADMIN_HOST_INFO_RSS_CONFIGURABLE_FUNCTION_KEY_SHIFT 4
+#define ENA_ADMIN_HOST_INFO_RSS_CONFIGURABLE_FUNCTION_KEY_MASK BIT(4)
 
 /* aenq_common_desc */
 #define ENA_ADMIN_AENQ_COMMON_DESC_PHASE_MASK               BIT(0)
@@ -1060,4 +1175,4 @@ struct ena_admin_ena_mmio_req_read_less_resp {
 /* aenq_link_change_desc */
 #define ENA_ADMIN_AENQ_LINK_CHANGE_DESC_LINK_STATUS_MASK    BIT(0)
 
-#endif /*_ENA_ADMIN_H_ */
+#endif /* _ENA_ADMIN_H_ */

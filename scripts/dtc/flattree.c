@@ -156,7 +156,7 @@ static void asm_emit_data(void *e, struct data d)
 		emit_offset_label(f, m->ref, m->offset);
 
 	while ((d.len - off) >= sizeof(uint32_t)) {
-		asm_emit_cell(e, fdt32_to_cpu(*((fdt32_t *)(d.val+off))));
+		asm_emit_cell(e, dtb_ld32(d.val + off));
 		off += sizeof(uint32_t);
 	}
 
@@ -510,7 +510,7 @@ void dt_to_asm(FILE *f, struct dt_info *dti, int version)
 	fprintf(f, "/* Memory reserve map from source file */\n");
 
 	/*
-	 * Use .long on high and low halfs of u64s to avoid .quad
+	 * Use .long on high and low halves of u64s to avoid .quad
 	 * as it appears .quad isn't available in some assemblers.
 	 */
 	for (re = dti->reservelist; re; re = re->next) {

@@ -3,9 +3,12 @@
  * Copyright (c) 2015 MediaTek Inc.
  */
 
-#include <drm/drmP.h>
-#include <drm/drm_gem.h>
 #include <linux/dma-buf.h>
+
+#include <drm/drm.h>
+#include <drm/drm_device.h>
+#include <drm/drm_gem.h>
+#include <drm/drm_prime.h>
 
 #include "mtk_drm_drv.h"
 #include "mtk_drm_gem.h"
@@ -114,7 +117,7 @@ int mtk_drm_gem_dumb_create(struct drm_file *file_priv, struct drm_device *dev,
 		goto err_handle_create;
 
 	/* drop reference from allocate - handle holds it now. */
-	drm_gem_object_put_unlocked(&mtk_gem->base);
+	drm_gem_object_put(&mtk_gem->base);
 
 	return 0;
 
@@ -136,7 +139,6 @@ static int mtk_drm_gem_object_mmap(struct drm_gem_object *obj,
 	 * VM_PFNMAP flag that was set by drm_gem_mmap_obj()/drm_gem_mmap().
 	 */
 	vma->vm_flags &= ~VM_PFNMAP;
-	vma->vm_pgoff = 0;
 
 	ret = dma_mmap_attrs(priv->dma_dev, vma, mtk_gem->cookie,
 			     mtk_gem->dma_addr, obj->size, mtk_gem->dma_attrs);
@@ -167,6 +169,12 @@ int mtk_drm_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 		return ret;
 
 	obj = vma->vm_private_data;
+
+	/*
+	 * Set vm_pgoff (used as a fake buffer offset by DRM) to 0 and map the
+	 * whole buffer from the start.
+	 */
+	vma->vm_pgoff = 0;
 
 	return mtk_drm_gem_object_mmap(obj, vma);
 }
@@ -216,6 +224,9 @@ struct drm_gem_object *mtk_gem_prime_import_sg_table(struct drm_device *dev,
 
 	expected = sg_dma_address(sg->sgl);
 	for_each_sg(sg->sgl, s, sg->nents, i) {
+		if (!sg_dma_len(s))
+			break;
+
 		if (sg_dma_address(s) != expected) {
 			DRM_ERROR("sg_table is not contiguous");
 			ret = -EINVAL;
@@ -263,7 +274,7 @@ void *mtk_drm_gem_prime_vmap(struct drm_gem_object *obj)
 			       pgprot_writecombine(PAGE_KERNEL));
 
 out:
-	kfree((void *)sgt);
+	kfree(sgt);
 
 	return mtk_gem->kvaddr;
 }
@@ -277,5 +288,5 @@ void mtk_drm_gem_prime_vunmap(struct drm_gem_object *obj, void *vaddr)
 
 	vunmap(vaddr);
 	mtk_gem->kvaddr = 0;
-	kfree((void *)mtk_gem->pages);
+	kfree(mtk_gem->pages);
 }

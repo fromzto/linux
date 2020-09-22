@@ -225,7 +225,7 @@ do_sigreturn(struct sigcontext __user *sc)
 	return;
 
 give_sigsegv:
-	force_sig(SIGSEGV, current);
+	force_sig(SIGSEGV);
 }
 
 asmlinkage void
@@ -253,7 +253,7 @@ do_rt_sigreturn(struct rt_sigframe __user *frame)
 	return;
 
 give_sigsegv:
-	force_sig(SIGSEGV, current);
+	force_sig(SIGSEGV);
 }
 
 
@@ -453,7 +453,7 @@ syscall_restart(unsigned long r0, unsigned long r19,
 			regs->r0 = EINTR;
 			break;
 		}
-		/* fallthrough */
+		fallthrough;
 	case ERESTARTNOINTR:
 		regs->r0 = r0;	/* reset v0 and a3 and replay syscall */
 		regs->r19 = r19;

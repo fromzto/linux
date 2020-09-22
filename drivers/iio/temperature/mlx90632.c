@@ -81,6 +81,8 @@
 /* Magic constants */
 #define MLX90632_ID_MEDICAL	0x0105 /* EEPROM DSPv5 Medical device id */
 #define MLX90632_ID_CONSUMER	0x0205 /* EEPROM DSPv5 Consumer device id */
+#define MLX90632_DSP_VERSION	5 /* DSP version */
+#define MLX90632_DSP_MASK	GENMASK(7, 0) /* DSP version in EE_VERSION */
 #define MLX90632_RESET_CMD	0x0006 /* Reset sensor (address or global) */
 #define MLX90632_REF_12		12LL /**< ResCtrlRef value of Ch 1 or Ch 2 */
 #define MLX90632_REF_3		12LL /**< ResCtrlRef value of Channel 3 */
@@ -162,8 +164,8 @@ static s32 mlx90632_pwr_continuous(struct regmap *regmap)
 }
 
 /**
- * mlx90632_perform_measurement - Trigger and retrieve current measurement cycle
- * @*data: pointer to mlx90632_data object containing regmap information
+ * mlx90632_perform_measurement() - Trigger and retrieve current measurement cycle
+ * @data: pointer to mlx90632_data object containing regmap information
  *
  * Perform a measurement and return latest measurement cycle position reported
  * by sensor. This is a blocking function for 500ms, as that is default sensor
@@ -643,7 +645,6 @@ static int mlx90632_probe(struct i2c_client *client,
 	mlx90632->regmap = regmap;
 
 	mutex_init(&mlx90632->lock);
-	indio_dev->dev.parent = &client->dev;
 	indio_dev->name = id->name;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->info = &mlx90632_info;
@@ -667,10 +668,13 @@ static int mlx90632_probe(struct i2c_client *client,
 	} else if (read == MLX90632_ID_CONSUMER) {
 		dev_dbg(&client->dev,
 			"Detected Consumer EEPROM calibration %x\n", read);
+	} else if ((read & MLX90632_DSP_MASK) == MLX90632_DSP_VERSION) {
+		dev_dbg(&client->dev,
+			"Detected Unknown EEPROM calibration %x\n", read);	
 	} else {
 		dev_err(&client->dev,
-			"EEPROM version mismatch %x (expected %x or %x)\n",
-			read, MLX90632_ID_CONSUMER, MLX90632_ID_MEDICAL);
+			"Wrong DSP version %x (expected %x)\n",
+			read, MLX90632_DSP_VERSION);
 		return -EPROTONOSUPPORT;
 	}
 

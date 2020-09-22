@@ -158,11 +158,11 @@ int sst_create_ipc_msg(struct ipc_post **arg, bool large)
 {
 	struct ipc_post *msg;
 
-	msg = kzalloc(sizeof(*msg), GFP_KERNEL);
+	msg = kzalloc(sizeof(*msg), GFP_ATOMIC);
 	if (!msg)
 		return -ENOMEM;
 	if (large) {
-		msg->mailbox_data = kzalloc(SST_MAILBOX_SIZE, GFP_KERNEL);
+		msg->mailbox_data = kzalloc(SST_MAILBOX_SIZE, GFP_ATOMIC);
 		if (!msg->mailbox_data) {
 			kfree(msg);
 			return -ENOMEM;
@@ -223,9 +223,9 @@ int sst_prepare_and_post_msg(struct intel_sst_drv *sst,
 		size_t mbox_data_len, const void *mbox_data, void **data,
 		bool large, bool fill_dsp, bool sync, bool response)
 {
+	struct sst_block *block = NULL;
 	struct ipc_post *msg = NULL;
 	struct ipc_dsp_hdr dsp_hdr;
-	struct sst_block *block;
 	int ret = 0, pvt_id;
 
 	pvt_id = sst_assign_pvt_id(sst);

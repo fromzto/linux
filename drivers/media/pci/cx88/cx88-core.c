@@ -31,7 +31,7 @@
 
 MODULE_DESCRIPTION("v4l2 driver module for cx2388x based TV cards");
 MODULE_AUTHOR("Gerd Knorr <kraxel@bytesex.org> [SuSE Labs]");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");
 
 /* ------------------------------------------------------------------ */
 
@@ -1070,8 +1070,7 @@ void cx88_core_put(struct cx88_core *core, struct pci_dev *pci)
 	mutex_lock(&devlist);
 	cx88_ir_fini(core);
 	if (core->i2c_rc == 0) {
-		if (core->i2c_rtc)
-			i2c_unregister_device(core->i2c_rtc);
+		i2c_unregister_device(core->i2c_rtc);
 		i2c_del_adapter(&core->i2c_adap);
 	}
 	list_del(&core->devlist);

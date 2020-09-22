@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* ADC driver for AXP20X and AXP22X PMICs
  *
  * Copyright (c) 2016 Free Electrons NextThing Co.
  *	Quentin Schulz <quentin.schulz@free-electrons.com>
- *
- * This program is free software; you can redistribute it and/or modify it under
- * the terms of the GNU General Public License version 2 as published by the
- * Free Software Foundation.
  */
 
 #include <linux/completion.h>
@@ -671,8 +668,6 @@ static int axp20x_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, indio_dev);
 
 	info->regmap = axp20x_dev->regmap;
-	indio_dev->dev.parent = &pdev->dev;
-	indio_dev->dev.of_node = pdev->dev.of_node;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
 	if (!pdev->dev.of_node) {

@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /// NULL check before some freeing functions is not needed.
 ///
 /// Based on checkpatch warning
 /// "kfree(NULL) is safe this check is probably not required"
 /// and kfreeaddr.cocci by Julia Lawall.
 ///
-// Copyright: (C) 2014 Fabian Frederick.  GPLv2.
+// Copyright: (C) 2014 Fabian Frederick.
 // Comments: -
 // Options: --no-includes --include-headers
 
@@ -20,7 +21,7 @@ expression E;
 (
   kfree(E);
 |
-  kzfree(E);
+  kfree_sensitive(E);
 |
   debugfs_remove(E);
 |
@@ -41,7 +42,7 @@ position p;
 @@
 
 * if (E != NULL)
-*	\(kfree@p\|kzfree@p\|debugfs_remove@p\|debugfs_remove_recursive@p\|
+*	\(kfree@p\|kfree_sensitive@p\|debugfs_remove@p\|debugfs_remove_recursive@p\|
 *         usb_free_urb@p\|kmem_cache_destroy@p\|mempool_destroy@p\|
 *         dma_pool_destroy@p\)(E);
 

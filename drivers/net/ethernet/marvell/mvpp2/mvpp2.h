@@ -15,6 +15,19 @@
 #include <linux/phy.h>
 #include <linux/phylink.h>
 #include <net/flow_offload.h>
+#include <net/page_pool.h>
+#include <linux/bpf.h>
+#include <net/xdp.h>
+
+/* The PacketOffset field is measured in units of 32 bytes and is 3 bits wide,
+ * so the maximum offset is 7 * 32 = 224
+ */
+#define MVPP2_SKB_HEADROOM	min(max(XDP_PACKET_HEADROOM, NET_SKB_PAD), 224)
+
+#define MVPP2_XDP_PASS		0
+#define MVPP2_XDP_DROPPED	BIT(0)
+#define MVPP2_XDP_TX		BIT(1)
+#define MVPP2_XDP_REDIR		BIT(2)
 
 /* Fifo Registers */
 #define MVPP2_RX_DATA_FIFO_SIZE_REG(port)	(0x00 + 4 * (port))
@@ -148,6 +161,8 @@
 #define MVPP22_CLS_C2_ATTR2			0x1b6c
 #define     MVPP22_CLS_C2_ATTR2_RSS_EN		BIT(30)
 #define MVPP22_CLS_C2_ATTR3			0x1b70
+#define MVPP22_CLS_C2_TCAM_CTRL			0x1b90
+#define     MVPP22_CLS_C2_TCAM_BYPASS_FIFO	BIT(0)
 
 /* Descriptor Manager Top Registers */
 #define MVPP2_RXQ_NUM_REG			0x2040
@@ -327,8 +342,26 @@
 #define     MVPP22_BM_ADDR_HIGH_VIRT_RLS_MASK	0xff00
 #define     MVPP22_BM_ADDR_HIGH_VIRT_RLS_SHIFT	8
 
+/* Packet Processor per-port counters */
+#define MVPP2_OVERRUN_ETH_DROP			0x7000
+#define MVPP2_CLS_ETH_DROP			0x7020
+
 /* Hit counters registers */
 #define MVPP2_CTRS_IDX				0x7040
+#define     MVPP22_CTRS_TX_CTR(port, txq)	((txq) | ((port) << 3) | BIT(7))
+#define MVPP2_TX_DESC_ENQ_CTR			0x7100
+#define MVPP2_TX_DESC_ENQ_TO_DDR_CTR		0x7104
+#define MVPP2_TX_BUFF_ENQ_TO_DDR_CTR		0x7108
+#define MVPP2_TX_DESC_ENQ_HW_FWD_CTR		0x710c
+#define MVPP2_RX_DESC_ENQ_CTR			0x7120
+#define MVPP2_TX_PKTS_DEQ_CTR			0x7130
+#define MVPP2_TX_PKTS_FULL_QUEUE_DROP_CTR	0x7200
+#define MVPP2_TX_PKTS_EARLY_DROP_CTR		0x7204
+#define MVPP2_TX_PKTS_BM_DROP_CTR		0x7208
+#define MVPP2_TX_PKTS_BM_MC_DROP_CTR		0x720c
+#define MVPP2_RX_PKTS_FULL_QUEUE_DROP_CTR	0x7220
+#define MVPP2_RX_PKTS_EARLY_DROP_CTR		0x7224
+#define MVPP2_RX_PKTS_BM_DROP_CTR		0x7228
 #define MVPP2_CLS_DEC_TBL_HIT_CTR		0x7700
 #define MVPP2_CLS_FLOW_TBL_HIT_CTR		0x7704
 
@@ -608,10 +641,12 @@
 	ALIGN((mtu) + MVPP2_MH_SIZE + MVPP2_VLAN_TAG_LEN + \
 	      ETH_HLEN + ETH_FCS_LEN, cache_line_size())
 
-#define MVPP2_RX_BUF_SIZE(pkt_size)	((pkt_size) + NET_SKB_PAD)
+#define MVPP2_RX_BUF_SIZE(pkt_size)	((pkt_size) + MVPP2_SKB_HEADROOM)
 #define MVPP2_RX_TOTAL_SIZE(buf_size)	((buf_size) + MVPP2_SKB_SHINFO_SIZE)
 #define MVPP2_RX_MAX_PKT_SIZE(total_size) \
-	((total_size) - NET_SKB_PAD - MVPP2_SKB_SHINFO_SIZE)
+	((total_size) - MVPP2_SKB_HEADROOM - MVPP2_SKB_SHINFO_SIZE)
+
+#define MVPP2_MAX_RX_BUF_SIZE	(PAGE_SIZE - MVPP2_SKB_SHINFO_SIZE - MVPP2_SKB_HEADROOM)
 
 #define MVPP2_BIT_TO_BYTE(bit)		((bit) / 8)
 #define MVPP2_BIT_TO_WORD(bit)		((bit) / 32)
@@ -624,6 +659,7 @@
 #define MVPP2_N_RFS_RULES		(MVPP2_N_RFS_ENTRIES_PER_FLOW * 7)
 
 /* RSS constants */
+#define MVPP22_N_RSS_TABLES		8
 #define MVPP22_RSS_TABLE_ENTRIES	32
 
 /* IPv6 max L3 address size */
@@ -662,14 +698,15 @@ enum mvpp2_prs_l3_cast {
 #define MVPP2_BM_SHORT_BUF_NUM		2048
 #define MVPP2_BM_POOL_SIZE_MAX		(16*1024 - MVPP2_BM_POOL_PTR_ALIGN/4)
 #define MVPP2_BM_POOL_PTR_ALIGN		128
+#define MVPP2_BM_MAX_POOLS		8
 
 /* BM cookie (32 bits) definition */
 #define MVPP2_BM_COOKIE_POOL_OFFS	8
 #define MVPP2_BM_COOKIE_CPU_OFFS	24
 
-#define MVPP2_BM_SHORT_FRAME_SIZE		512
-#define MVPP2_BM_LONG_FRAME_SIZE		2048
-#define MVPP2_BM_JUMBO_FRAME_SIZE		10240
+#define MVPP2_BM_SHORT_FRAME_SIZE	704	/* frame size 128 */
+#define MVPP2_BM_LONG_FRAME_SIZE	2240	/* frame size 1664 */
+#define MVPP2_BM_JUMBO_FRAME_SIZE	10432	/* frame size 9856 */
 /* BM short pool packet size
  * These value assure that for SWF the total number
  * of bytes allocated for each buffer will be 512
@@ -725,6 +762,10 @@ enum mvpp2_prs_l3_cast {
 /* Definitions */
 struct mvpp2_dbgfs_entries;
 
+struct mvpp2_rss_table {
+	u32 indir[MVPP22_RSS_TABLE_ENTRIES];
+};
+
 /* Shared Packet Processor resources */
 struct mvpp2 {
 	/* Shared registers' base addresses */
@@ -762,6 +803,9 @@ struct mvpp2 {
 	/* Aggregated TXQs */
 	struct mvpp2_tx_queue *aggr_txqs;
 
+	/* Are we using page_pool with per-cpu pools? */
+	int percpu_pools;
+
 	/* BM pools */
 	struct mvpp2_bm_pool *bm_pools;
 
@@ -788,6 +832,12 @@ struct mvpp2 {
 
 	/* Debugfs entries private data */
 	struct mvpp2_dbgfs_entries *dbgfs_entries;
+
+	/* RSS Indirection tables */
+	struct mvpp2_rss_table *rss_tables[MVPP22_N_RSS_TABLES];
+
+	/* page_pool allocator */
+	struct page_pool *page_pool[MVPP2_PORT_MAX_RXQ];
 };
 
 struct mvpp2_pcpu_stats {
@@ -796,14 +846,21 @@ struct mvpp2_pcpu_stats {
 	u64	rx_bytes;
 	u64	tx_packets;
 	u64	tx_bytes;
+	/* XDP */
+	u64	xdp_redirect;
+	u64	xdp_pass;
+	u64	xdp_drop;
+	u64	xdp_xmit;
+	u64	xdp_xmit_err;
+	u64	xdp_tx;
+	u64	xdp_tx_err;
 };
 
 /* Per-CPU port control */
 struct mvpp2_port_pcpu {
 	struct hrtimer tx_done_timer;
+	struct net_device *dev;
 	bool timer_scheduled;
-	/* Tasklet for egress finalization */
-	struct tasklet_struct tx_done_tasklet;
 };
 
 struct mvpp2_queue_vector {
@@ -878,6 +935,8 @@ struct mvpp2_port {
 	unsigned int ntxqs;
 	struct net_device *dev;
 
+	struct bpf_prog *xdp_prog;
+
 	int pkt_size;
 
 	/* Per-CPU port control */
@@ -897,6 +956,8 @@ struct mvpp2_port {
 	struct mvpp2_pcpu_stats __percpu *stats;
 	u64 *ethtool_stats;
 
+	unsigned long state;
+
 	/* Per-port work and its lock to gather hardware statistics */
 	struct mutex gather_stats_lock;
 	struct delayed_work stats_work;
@@ -905,6 +966,7 @@ struct mvpp2_port {
 
 	phy_interface_t phy_interface;
 	struct phylink *phylink;
+	struct phylink_config phylink_config;
 	struct phy *comphy;
 
 	struct mvpp2_bm_pool *pool_long;
@@ -919,12 +981,14 @@ struct mvpp2_port {
 
 	u32 tx_time_coal;
 
-	/* RSS indirection table */
-	u32 indir[MVPP22_RSS_TABLE_ENTRIES];
-
 	/* List of steering rules active on that port */
-	struct mvpp2_ethtool_fs *rfs_rules[MVPP2_N_RFS_RULES];
+	struct mvpp2_ethtool_fs *rfs_rules[MVPP2_N_RFS_ENTRIES_PER_FLOW];
 	int n_rfs_rules;
+
+	/* Each port has its own view of the rss contexts, so that it can number
+	 * them from 0
+	 */
+	int rss_ctx[MVPP22_N_RSS_TABLES];
 };
 
 /* The mvpp2_tx_desc and mvpp2_rx_desc structures describe the
@@ -1026,9 +1090,20 @@ struct mvpp2_rx_desc {
 	};
 };
 
+enum mvpp2_tx_buf_type {
+	MVPP2_TYPE_SKB,
+	MVPP2_TYPE_XDP_TX,
+	MVPP2_TYPE_XDP_NDO,
+};
+
 struct mvpp2_txq_pcpu_buf {
+	enum mvpp2_tx_buf_type type;
+
 	/* Transmitted SKB */
-	struct sk_buff *skb;
+	union {
+		struct xdp_frame *xdpf;
+		struct sk_buff *skb;
+	};
 
 	/* Physical address of transmitted buffer */
 	dma_addr_t dma;
@@ -1127,6 +1202,10 @@ struct mvpp2_rx_queue {
 
 	/* Port's logic RXQ number to which physical RXQ is mapped */
 	int logic_rxq;
+
+	/* XDP memory accounting */
+	struct xdp_rxq_info xdp_rxq_short;
+	struct xdp_rxq_info xdp_rxq_long;
 };
 
 struct mvpp2_bm_pool {

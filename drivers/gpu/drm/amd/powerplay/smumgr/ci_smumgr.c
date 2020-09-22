@@ -25,6 +25,7 @@
 #include <linux/fb.h>
 #include "linux/delay.h"
 #include <linux/types.h>
+#include <linux/pci.h>
 
 #include "smumgr.h"
 #include "pp_debug.h"
@@ -36,6 +37,7 @@
 #include "cgs_common.h"
 #include "atombios.h"
 #include "pppcielanes.h"
+#include "smu7_smumgr.h"
 
 #include "smu/smu_7_0_1_d.h"
 #include "smu/smu_7_0_1_sh_mask.h"
@@ -182,7 +184,7 @@ static int ci_program_jump_on_start(struct pp_hwmgr *hwmgr)
 	return 0;
 }
 
-bool ci_is_smc_ram_running(struct pp_hwmgr *hwmgr)
+static bool ci_is_smc_ram_running(struct pp_hwmgr *hwmgr)
 {
 	return ((0 == PHM_READ_VFPF_INDIRECT_FIELD(hwmgr->device,
 			CGS_IND_REG__SMC, SMC_SYSCON_CLOCK_CNTL_0, ck_disable))
@@ -238,7 +240,7 @@ static void ci_initialize_power_tune_defaults(struct pp_hwmgr *hwmgr)
 
 	switch (dev_id) {
 	case 0x67BA:
-	case 0x66B1:
+	case 0x67B1:
 		smu_data->power_tune_defaults = &defaults_hawaii_pro;
 		break;
 	case 0x67B8:
@@ -652,8 +654,8 @@ static int ci_min_max_v_gnbl_pm_lid_from_bapm_vddc(struct pp_hwmgr *hwmgr)
 static int ci_populate_bapm_vddc_base_leakage_sidd(struct pp_hwmgr *hwmgr)
 {
 	struct ci_smumgr *smu_data = (struct ci_smumgr *)(hwmgr->smu_backend);
-	uint16_t HiSidd = smu_data->power_tune_table.BapmVddCBaseLeakageHiSidd;
-	uint16_t LoSidd = smu_data->power_tune_table.BapmVddCBaseLeakageLoSidd;
+	uint16_t HiSidd;
+	uint16_t LoSidd;
 	struct phm_cac_tdp_table *cac_table = hwmgr->dyn_state.cac_dtp_table;
 
 	HiSidd = (uint16_t)(cac_table->usHighCACLeakage / 100 * 256);
@@ -2254,6 +2256,8 @@ static uint32_t ci_get_offsetof(uint32_t type, uint32_t member)
 			return offsetof(SMU7_SoftRegisters, VoltageChangeTimeout);
 		case AverageGraphicsActivity:
 			return offsetof(SMU7_SoftRegisters, AverageGraphicsA);
+		case AverageMemoryActivity:
+			return offsetof(SMU7_SoftRegisters, AverageMemoryA);
 		case PreVBlankGap:
 			return offsetof(SMU7_SoftRegisters, PreVBlankGap);
 		case VBlankTimeout:
@@ -2702,8 +2706,6 @@ static int ci_initialize_mc_reg_table(struct pp_hwmgr *hwmgr)
 	cgs_write_register(hwmgr->device, mmMC_SEQ_PMG_CMD_MRS2_LP, cgs_read_register(hwmgr->device, mmMC_PMG_CMD_MRS2));
 	cgs_write_register(hwmgr->device, mmMC_SEQ_WR_CTL_2_LP, cgs_read_register(hwmgr->device, mmMC_SEQ_WR_CTL_2));
 
-	memset(table, 0x00, sizeof(pp_atomctrl_mc_reg_table));
-
 	result = atomctrl_initialize_mc_reg_table(hwmgr, module_index, table);
 
 	if (0 == result)
@@ -2724,7 +2726,10 @@ static int ci_initialize_mc_reg_table(struct pp_hwmgr *hwmgr)
 
 static bool ci_is_dpm_running(struct pp_hwmgr *hwmgr)
 {
-	return ci_is_smc_ram_running(hwmgr);
+	return (1 == PHM_READ_INDIRECT_FIELD(hwmgr->device,
+					     CGS_IND_REG__SMC, FEATURE_STATUS,
+					     VOLTAGE_CONTROLLER_ON))
+		? true : false;
 }
 
 static int ci_smu_init(struct pp_hwmgr *hwmgr)
@@ -2779,7 +2784,7 @@ static int ci_update_dpm_settings(struct pp_hwmgr *hwmgr,
 
 	if (setting->bupdate_sclk) {
 		if (!data->sclk_dpm_key_disabled)
-			smum_send_msg_to_smc(hwmgr, PPSMC_MSG_SCLKDPM_FreezeLevel);
+			smum_send_msg_to_smc(hwmgr, PPSMC_MSG_SCLKDPM_FreezeLevel, NULL);
 		for (i = 0; i < smu_data->smc_state_table.GraphicsDpmLevelCount; i++) {
 			if (levels[i].ActivityLevel !=
 				cpu_to_be16(setting->sclk_activity)) {
@@ -2809,12 +2814,12 @@ static int ci_update_dpm_settings(struct pp_hwmgr *hwmgr,
 			}
 		}
 		if (!data->sclk_dpm_key_disabled)
-			smum_send_msg_to_smc(hwmgr, PPSMC_MSG_SCLKDPM_UnfreezeLevel);
+			smum_send_msg_to_smc(hwmgr, PPSMC_MSG_SCLKDPM_UnfreezeLevel, NULL);
 	}
 
 	if (setting->bupdate_mclk) {
 		if (!data->mclk_dpm_key_disabled)
-			smum_send_msg_to_smc(hwmgr, PPSMC_MSG_MCLKDPM_FreezeLevel);
+			smum_send_msg_to_smc(hwmgr, PPSMC_MSG_MCLKDPM_FreezeLevel, NULL);
 		for (i = 0; i < smu_data->smc_state_table.MemoryDpmLevelCount; i++) {
 			if (mclk_levels[i].ActivityLevel !=
 				cpu_to_be16(setting->mclk_activity)) {
@@ -2844,7 +2849,7 @@ static int ci_update_dpm_settings(struct pp_hwmgr *hwmgr,
 			}
 		}
 		if (!data->mclk_dpm_key_disabled)
-			smum_send_msg_to_smc(hwmgr, PPSMC_MSG_MCLKDPM_UnfreezeLevel);
+			smum_send_msg_to_smc(hwmgr, PPSMC_MSG_MCLKDPM_UnfreezeLevel, NULL);
 	}
 	return 0;
 }
@@ -2880,8 +2885,9 @@ static int ci_update_uvd_smc_table(struct pp_hwmgr *hwmgr)
 		if (hwmgr->dpm_level & profile_mode_mask || !PP_CAP(PHM_PlatformCaps_UVDDPM))
 			break;
 	}
-	ci_send_msg_to_smc_with_parameter(hwmgr, PPSMC_MSG_UVDDPM_SetEnabledMask,
-				data->dpm_level_enable_mask.uvd_dpm_enable_mask);
+	smum_send_msg_to_smc_with_parameter(hwmgr, PPSMC_MSG_UVDDPM_SetEnabledMask,
+				data->dpm_level_enable_mask.uvd_dpm_enable_mask,
+				NULL);
 
 	return 0;
 }
@@ -2911,8 +2917,9 @@ static int ci_update_vce_smc_table(struct pp_hwmgr *hwmgr)
 		if (hwmgr->dpm_level & profile_mode_mask || !PP_CAP(PHM_PlatformCaps_VCEDPM))
 			break;
 	}
-	ci_send_msg_to_smc_with_parameter(hwmgr, PPSMC_MSG_VCEDPM_SetEnabledMask,
-				data->dpm_level_enable_mask.vce_dpm_enable_mask);
+	smum_send_msg_to_smc_with_parameter(hwmgr, PPSMC_MSG_VCEDPM_SetEnabledMask,
+				data->dpm_level_enable_mask.vce_dpm_enable_mask,
+				NULL);
 
 	return 0;
 }
@@ -2933,6 +2940,7 @@ static int ci_update_smc_table(struct pp_hwmgr *hwmgr, uint32_t type)
 }
 
 const struct pp_smumgr_func ci_smu_funcs = {
+	.name = "ci_smu",
 	.smu_init = ci_smu_init,
 	.smu_fini = ci_smu_fini,
 	.start_smu = ci_start_smu,
@@ -2941,6 +2949,7 @@ const struct pp_smumgr_func ci_smu_funcs = {
 	.request_smu_load_specific_fw = NULL,
 	.send_msg_to_smc = ci_send_msg_to_smc,
 	.send_msg_to_smc_with_parameter = ci_send_msg_to_smc_with_parameter,
+	.get_argument = smu7_get_argument,
 	.download_pptable_settings = NULL,
 	.upload_pptable_settings = NULL,
 	.get_offsetof = ci_get_offsetof,

@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Input Multitouch Library
  *
  * Copyright (c) 2008-2010 Henrik Rydberg
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  */
 
 #include <linux/input/mt.h>
@@ -19,7 +16,7 @@ static void copy_abs(struct input_dev *dev, unsigned int dst, unsigned int src)
 	if (dev->absinfo && test_bit(src, dev->absbit)) {
 		dev->absinfo[dst] = dev->absinfo[src];
 		dev->absinfo[dst].fuzz = 0;
-		dev->absbit[BIT_WORD(dst)] |= BIT_MASK(dst);
+		__set_bit(dst, dev->absbit);
 	}
 }
 

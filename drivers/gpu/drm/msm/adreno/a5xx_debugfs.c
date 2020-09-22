@@ -2,9 +2,11 @@
 /* Copyright (c) 2016-2017 The Linux Foundation. All rights reserved.
  */
 
-
 #include <linux/types.h>
 #include <linux/debugfs.h>
+
+#include <drm/drm_debugfs.h>
+#include <drm/drm_file.h>
 #include <drm/drm_print.h>
 
 #include "a5xx_gpu.h"
@@ -122,13 +124,13 @@ reset_set(void *data, u64 val)
 
 	if (a5xx_gpu->pm4_bo) {
 		msm_gem_unpin_iova(a5xx_gpu->pm4_bo, gpu->aspace);
-		drm_gem_object_put(a5xx_gpu->pm4_bo);
+		drm_gem_object_put_locked(a5xx_gpu->pm4_bo);
 		a5xx_gpu->pm4_bo = NULL;
 	}
 
 	if (a5xx_gpu->pfp_bo) {
 		msm_gem_unpin_iova(a5xx_gpu->pfp_bo, gpu->aspace);
-		drm_gem_object_put(a5xx_gpu->pfp_bo);
+		drm_gem_object_put_locked(a5xx_gpu->pfp_bo);
 		a5xx_gpu->pfp_bo = NULL;
 	}
 
@@ -146,31 +148,19 @@ reset_set(void *data, u64 val)
 DEFINE_SIMPLE_ATTRIBUTE(reset_fops, NULL, reset_set, "%llx\n");
 
 
-int a5xx_debugfs_init(struct msm_gpu *gpu, struct drm_minor *minor)
+void a5xx_debugfs_init(struct msm_gpu *gpu, struct drm_minor *minor)
 {
 	struct drm_device *dev;
-	struct dentry *ent;
-	int ret;
 
 	if (!minor)
-		return 0;
+		return;
 
 	dev = minor->dev;
 
-	ret = drm_debugfs_create_files(a5xx_debugfs_list,
-			ARRAY_SIZE(a5xx_debugfs_list),
-			minor->debugfs_root, minor);
+	drm_debugfs_create_files(a5xx_debugfs_list,
+				 ARRAY_SIZE(a5xx_debugfs_list),
+				 minor->debugfs_root, minor);
 
-	if (ret) {
-		DRM_DEV_ERROR(dev->dev, "could not install a5xx_debugfs_list\n");
-		return ret;
-	}
-
-	ent = debugfs_create_file("reset", S_IWUGO,
-		minor->debugfs_root,
-		dev, &reset_fops);
-	if (!ent)
-		return -ENOMEM;
-
-	return 0;
+	debugfs_create_file("reset", S_IWUGO, minor->debugfs_root, dev,
+			    &reset_fops);
 }

@@ -43,7 +43,6 @@
 
 #include <asm/setup.h>
 #include <linux/uaccess.h>
-#include <asm/pgtable.h>
 #include <asm/traps.h>
 #include <asm/ucontext.h>
 
@@ -126,7 +125,7 @@ asmlinkage int sys_rt_sigreturn(void)
 	return er0;
 
 badframe:
-	force_sig(SIGSEGV, current);
+	force_sig(SIGSEGV);
 	return 0;
 }
 
@@ -228,7 +227,7 @@ handle_restart(struct pt_regs *regs, struct k_sigaction *ka)
 			regs->er0 = -EINTR;
 			break;
 		}
-		/* fallthrough */
+		fallthrough;
 	case -ERESTARTNOINTR:
 do_restart:
 		regs->er0 = regs->orig_er0;

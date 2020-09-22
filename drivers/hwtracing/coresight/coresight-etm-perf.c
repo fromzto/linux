@@ -226,9 +226,6 @@ static void *etm_setup_aux(struct perf_event *event, void **pages,
 		sink = coresight_get_enabled_sink(true);
 	}
 
-	if (!sink)
-		goto err;
-
 	mask = &event_data->mask;
 
 	/*
@@ -254,6 +251,16 @@ static void *etm_setup_aux(struct perf_event *event, void **pages,
 		}
 
 		/*
+		 * No sink provided - look for a default sink for one of the
+		 * devices. At present we only support topology where all CPUs
+		 * use the same sink [N:1], so only need to find one sink. The
+		 * coresight_build_path later will remove any CPU that does not
+		 * attach to the sink, or if we have not found a sink.
+		 */
+		if (!sink)
+			sink = coresight_find_default_sink(csdev);
+
+		/*
 		 * Building a path doesn't enable it, it simply builds a
 		 * list of devices from source to sink that can be
 		 * referenced later when the path is actually needed.
@@ -266,6 +273,10 @@ static void *etm_setup_aux(struct perf_event *event, void **pages,
 
 		*etm_event_cpu_path_ptr(event_data, cpu) = path;
 	}
+
+	/* no sink found for any CPU - cannot trace */
+	if (!sink)
+		goto err;
 
 	/* If we don't have any CPUs ready for tracing, abort */
 	cpu = cpumask_first(mask);
@@ -523,7 +534,7 @@ int etm_perf_add_symlink_sink(struct coresight_device *csdev)
 	unsigned long hash;
 	const char *name;
 	struct device *pmu_dev = etm_pmu.dev;
-	struct device *pdev = csdev->dev.parent;
+	struct device *dev = &csdev->dev;
 	struct dev_ext_attribute *ea;
 
 	if (csdev->type != CORESIGHT_DEV_TYPE_SINK &&
@@ -536,15 +547,16 @@ int etm_perf_add_symlink_sink(struct coresight_device *csdev)
 	if (!etm_perf_up)
 		return -EPROBE_DEFER;
 
-	ea = devm_kzalloc(pdev, sizeof(*ea), GFP_KERNEL);
+	ea = devm_kzalloc(dev, sizeof(*ea), GFP_KERNEL);
 	if (!ea)
 		return -ENOMEM;
 
-	name = dev_name(pdev);
+	name = dev_name(dev);
 	/* See function coresight_get_sink_by_id() to know where this is used */
 	hash = hashlen_hash(hashlen_string(NULL, name));
 
-	ea->attr.attr.name = devm_kstrdup(pdev, name, GFP_KERNEL);
+	sysfs_attr_init(&ea->attr.attr);
+	ea->attr.attr.name = devm_kstrdup(dev, name, GFP_KERNEL);
 	if (!ea->attr.attr.name)
 		return -ENOMEM;
 

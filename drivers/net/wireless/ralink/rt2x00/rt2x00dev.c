@@ -371,9 +371,6 @@ static void rt2x00lib_fill_tx_status(struct rt2x00_dev *rt2x00dev,
 				  IEEE80211_TX_CTL_AMPDU;
 		tx_info->status.ampdu_len = 1;
 		tx_info->status.ampdu_ack_len = success ? 1 : 0;
-
-		if (!success)
-			tx_info->flags |= IEEE80211_TX_STAT_AMPDU_NO_BACK;
 	}
 
 	if (rate_flags & IEEE80211_TX_RC_USE_RTS_CTS) {
@@ -1256,10 +1253,7 @@ static int rt2x00lib_initialize(struct rt2x00_dev *rt2x00dev)
 
 int rt2x00lib_start(struct rt2x00_dev *rt2x00dev)
 {
-	int retval;
-
-	if (test_bit(DEVICE_STATE_STARTED, &rt2x00dev->flags))
-		return 0;
+	int retval = 0;
 
 	/*
 	 * If this is the first interface which is added,
@@ -1267,14 +1261,14 @@ int rt2x00lib_start(struct rt2x00_dev *rt2x00dev)
 	 */
 	retval = rt2x00lib_load_firmware(rt2x00dev);
 	if (retval)
-		return retval;
+		goto out;
 
 	/*
 	 * Initialize the device.
 	 */
 	retval = rt2x00lib_initialize(rt2x00dev);
 	if (retval)
-		return retval;
+		goto out;
 
 	rt2x00dev->intf_ap_count = 0;
 	rt2x00dev->intf_sta_count = 0;
@@ -1283,11 +1277,12 @@ int rt2x00lib_start(struct rt2x00_dev *rt2x00dev)
 	/* Enable the radio */
 	retval = rt2x00lib_enable_radio(rt2x00dev);
 	if (retval)
-		return retval;
+		goto out;
 
 	set_bit(DEVICE_STATE_STARTED, &rt2x00dev->flags);
 
-	return 0;
+out:
+	return retval;
 }
 
 void rt2x00lib_stop(struct rt2x00_dev *rt2x00dev)
@@ -1561,8 +1556,7 @@ EXPORT_SYMBOL_GPL(rt2x00lib_remove_dev);
 /*
  * Device state handlers
  */
-#ifdef CONFIG_PM
-int rt2x00lib_suspend(struct rt2x00_dev *rt2x00dev, pm_message_t state)
+int rt2x00lib_suspend(struct rt2x00_dev *rt2x00dev)
 {
 	rt2x00_dbg(rt2x00dev, "Going to sleep\n");
 
@@ -1619,7 +1613,6 @@ int rt2x00lib_resume(struct rt2x00_dev *rt2x00dev)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(rt2x00lib_resume);
-#endif /* CONFIG_PM */
 
 /*
  * rt2x00lib module information.

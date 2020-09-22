@@ -114,6 +114,7 @@ static int ping_v6_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	security_sk_classify_flow(sk, flowi6_to_flowi(&fl6));
 
 	ipcm6_init_sk(&ipc6, np);
+	ipc6.sockc.mark = sk->sk_mark;
 	fl6.flowlabel = ip6_make_flowinfo(ipc6.tclass, fl6.flowlabel);
 
 	dst = ip6_sk_dst_lookup_flow(sk, &fl6, daddr, false);
@@ -223,7 +224,7 @@ static int __net_init ping_v6_proc_init_net(struct net *net)
 	return 0;
 }
 
-static void __net_init ping_v6_proc_exit_net(struct net *net)
+static void __net_exit ping_v6_proc_exit_net(struct net *net)
 {
 	remove_proc_entry("icmp6", net->proc_net);
 }

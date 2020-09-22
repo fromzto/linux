@@ -343,8 +343,6 @@ static int envelope_detector_probe(struct platform_device *pdev)
 	INIT_DELAYED_WORK(&env->comp_timeout, envelope_detector_timeout);
 
 	indio_dev->name = dev_name(dev);
-	indio_dev->dev.parent = dev;
-	indio_dev->dev.of_node = dev->of_node;
 	indio_dev->info = &envelope_detector_info;
 	indio_dev->channels = &envelope_detector_iio_channel;
 	indio_dev->num_channels = 1;
@@ -357,11 +355,8 @@ static int envelope_detector_probe(struct platform_device *pdev)
 	}
 
 	env->comp_irq = platform_get_irq_byname(pdev, "comp");
-	if (env->comp_irq < 0) {
-		if (env->comp_irq != -EPROBE_DEFER)
-			dev_err(dev, "failed to get compare interrupt\n");
+	if (env->comp_irq < 0)
 		return env->comp_irq;
-	}
 
 	ret = devm_request_irq(dev, env->comp_irq, envelope_detector_comp_isr,
 			       0, "envelope-detector", env);

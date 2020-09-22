@@ -18,6 +18,9 @@
 #include <sound/hda_verbs.h>
 #include <sound/hda_regmap.h>
 
+#define IS_BXT(pci) ((pci)->vendor == 0x8086 && (pci)->device == 0x5a98)
+#define IS_CFL(pci) ((pci)->vendor == 0x8086 && (pci)->device == 0xa348)
+
 /*
  * Structures
  */
@@ -48,7 +51,6 @@ struct hda_bus {
 	DECLARE_BITMAP(pcm_dev_bits, SNDRV_PCM_DEVICES);
 
 	/* misc op flags */
-	unsigned int needs_damn_long_delay :1;
 	unsigned int allow_bus_reset:1;	/* allow bus reset at fatal error */
 	/* status for codec/controller */
 	unsigned int shutdown :1;	/* being unloaded */
@@ -56,6 +58,7 @@ struct hda_bus {
 	unsigned int in_reset:1;	/* during reset operation */
 	unsigned int no_response_fallback:1; /* don't fallback at RIRB error */
 	unsigned int bus_probing :1;	/* during probing process */
+	unsigned int keep_power:1;	/* keep power up for notification */
 
 	int primary_dig_out_type;	/* primary digital out PCM type */
 	unsigned int mixer_assigned;	/* codec addr for mixer name */
@@ -205,7 +208,7 @@ struct hda_codec {
 	struct mutex control_mutex;
 	struct snd_array spdif_out;
 	unsigned int spdif_in_enable;	/* SPDIF input enable? */
-	const hda_nid_t *slave_dig_outs; /* optional digital out slave widgets */
+	const hda_nid_t *follower_dig_outs; /* optional digital out follower widgets */
 	struct snd_array init_pins;	/* initial (BIOS) pin configurations */
 	struct snd_array driver_pins;	/* pin configs set by codec parser */
 	struct snd_array cvt_setups;	/* audio convert setups */
@@ -249,6 +252,9 @@ struct hda_codec {
 	unsigned int auto_runtime_pm:1; /* enable automatic codec runtime pm */
 	unsigned int force_pin_prefix:1; /* Add location prefix */
 	unsigned int link_down_at_suspend:1; /* link down at runtime suspend */
+	unsigned int relaxed_resume:1;	/* don't resume forcibly for jack */
+	unsigned int mst_no_extra_pcms:1; /* no backup PCMs for DP-MST */
+
 #ifdef CONFIG_PM
 	unsigned long power_on_acct;
 	unsigned long power_off_acct;
@@ -268,9 +274,6 @@ struct hda_codec {
 	unsigned long jackpoll_interval; /* In jiffies. Zero means no poll, rely on unsol events */
 	struct delayed_work jackpoll_work;
 
-	/* jack detection */
-	struct snd_array jacks;
-
 	int depop_delay; /* depop delay in ms, -1 for default delay time */
 
 	/* fix-up list */
@@ -284,6 +287,10 @@ struct hda_codec {
 
 #define dev_to_hda_codec(_dev)	container_of(_dev, struct hda_codec, core.dev)
 #define hda_codec_dev(_dev)	(&(_dev)->core.dev)
+
+#define hdac_to_hda_priv(_hdac) \
+			container_of(_hdac, struct hdac_hda_priv, codec.core)
+#define hdac_to_hda_codec(_hdac) container_of(_hdac, struct hda_codec, core)
 
 #define list_for_each_codec(c, bus) \
 	list_for_each_entry(c, &(bus)->core.codec_list, core.list)
@@ -359,13 +366,6 @@ struct hda_verb {
 void snd_hda_sequence_write(struct hda_codec *codec,
 			    const struct hda_verb *seq);
 
-/* unsolicited event */
-static inline void
-snd_hda_queue_unsol_event(struct hda_bus *bus, u32 res, u32 res_ex)
-{
-	snd_hdac_bus_queue_event(&bus->core, res, res_ex);
-}
-
 /* cached write */
 static inline int
 snd_hda_codec_write_cache(struct hda_codec *codec, hda_nid_t nid,
@@ -414,6 +414,8 @@ int snd_hda_codec_build_pcms(struct hda_codec *codec);
 __printf(2, 3)
 struct hda_pcm *snd_hda_codec_pcm_new(struct hda_codec *codec,
 				      const char *fmt, ...);
+
+void snd_hda_codec_cleanup_for_unbind(struct hda_codec *codec);
 
 static inline void snd_hda_codec_pcm_get(struct hda_pcm *pcm)
 {
@@ -490,6 +492,11 @@ void snd_hda_update_power_acct(struct hda_codec *codec);
 #else
 static inline void snd_hda_set_power_save(struct hda_bus *bus, int delay) {}
 #endif
+
+static inline bool hda_codec_need_resume(struct hda_codec *codec)
+{
+	return !codec->relaxed_resume && codec->jacktbl.used;
+}
 
 #ifdef CONFIG_SND_HDA_PATCH_LOADER
 /*

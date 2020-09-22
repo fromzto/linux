@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * gpio-event-mon - monitor GPIO line events from userspace
  *
  * Copyright (C) 2016 Linus Walleij
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  *
  * Usage:
  *	gpio-event-mon -n <device-name> -o <offset>
@@ -48,7 +45,7 @@ int monitor_device(const char *device_name,
 	if (fd == -1) {
 		ret = -errno;
 		fprintf(stderr, "Failed to open %s\n", chrdev_name);
-		goto exit_close_error;
+		goto exit_free_name;
 	}
 
 	req.lineoffset = line;
@@ -120,6 +117,7 @@ int monitor_device(const char *device_name,
 exit_close_error:
 	if (close(fd) == -1)
 		perror("Failed to close GPIO character device file");
+exit_free_name:
 	free(chrdev_name);
 	return ret;
 }
